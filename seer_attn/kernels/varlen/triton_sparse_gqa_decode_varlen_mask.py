@@ -1,6 +1,6 @@
 # Copyright (c) Tile-AI Corporation.
 # Licensed under the MIT License.
-# ruff: noqa
+
 import torch
 import triton
 import triton.language as tl
@@ -33,7 +33,6 @@ def _split_kernel(
     sm_scale,
     num_splits,
     gqa_group_size,
-    max_selected_blocks,
     stride_q_b,
     stride_q_h,
     stride_q_d,
@@ -72,7 +71,7 @@ def _split_kernel(
     acc = tl.zeros([BLOCK_H, BLOCK_D], dtype=tl.float32)
 
     cache_seqlens = tl.load(cache_seqlens_ptr + batch_idx)
-    num_blocks = max_selected_blocks
+    num_blocks = (cache_seqlens + BLOCK_N - 1) // BLOCK_N
     blocks_per_split = tl.floor(num_blocks / num_splits).to(tl.int32)
     remaining_blocks = num_blocks % num_splits
     if split_idx < remaining_blocks:
@@ -92,10 +91,10 @@ def _split_kernel(
         q_ptr + offs_h[:, None] * stride_q_h + offs_d[None, :] * stride_q_d,
         mask=offs_h[:, None] < gqa_group_size)
     start = blocks_per_split * split_idx + tl.minimum(split_idx, remaining_blocks)
-    for i in range(loop_range):
-        block_idx = tl.load(mask_ptr + (start + i) * stride_mask_s)
-        if block_idx >= 0:
-            start_n = block_idx * BLOCK_N
+    for block_idx in range(loop_range):
+        start_n = (start + block_idx) * BLOCK_N
+        mask_val = tl.load(mask_ptr + (start + block_idx) * stride_mask_s)
+        if mask_val == 1:
             k_ptr = k_cache_ptr + start_n * stride_k_s
             v_ptr = v_cache_ptr + start_n * stride_v_s
 
@@ -186,14 +185,13 @@ def _merge_kernel(
     tl.store(o_ptr + offs_d * o_stride_d, acc)
 
 
-def block_sparse_flash_decode_gqa_indice_triton(
+def block_sparse_flash_decode_gqa_mask_triton(
     q,
     k_cache,
     v_cache,
     cache_seqlens,
     max_cache_seqlen,
-    max_selected_blocks,
-    block_indices,
+    block_mask,
     block_size,
     sm_scale=None,
 ):
@@ -208,6 +206,7 @@ def block_sparse_flash_decode_gqa_indice_triton(
 
     block_H = 16
 
+    max_selected_blocks = (max_cache_seqlen + block_size - 1) // block_size
     num_m_blocks = 1 * (heads // heads_kv + block_H - 1) // block_H
     num_n_blocks = max_selected_blocks
 
@@ -242,11 +241,10 @@ def block_sparse_flash_decode_gqa_indice_triton(
         cache_seqlens,
         o_partial,
         lse_partial,
-        block_indices,
+        block_mask,
         sm_scale,
         num_splits,
         group_size,
-        max_selected_blocks,
         q.stride(0),
         q.stride(1),
         q.stride(2),
@@ -265,9 +263,9 @@ def block_sparse_flash_decode_gqa_indice_triton(
         lse_partial.stride(0),
         lse_partial.stride(1),
         lse_partial.stride(2),
-        block_indices.stride(0),
-        block_indices.stride(1),
-        block_indices.stride(2),
+        block_mask.stride(0),
+        block_mask.stride(1),
+        block_mask.stride(2),
         BLOCK_H=BLOCK_H,
         BLOCK_N=block_size,
         BLOCK_D=BLOCK_D,
@@ -297,12 +295,12 @@ def block_sparse_flash_decode_gqa_indice_triton(
     return output
 
 
-def ref_program_torch(query, key, value, block_indices, cache_seqlens, max_cache_seqlen, num_blocks,
+def ref_program_torch(query, key, value, block_mask, cache_seqlens, max_cache_seqlen, num_blocks,
                       block_size):
 
     batch, heads, dim = query.shape
     heads_kv = key.shape[2]
-    dim_v = value.shape[-1]
+
     num_head_groups = query.shape[1] // key.shape[2]
     scale = dim**0.5
     key = rearrange(key, 'b n h d -> b h n d')  # [batch_size, heads_kv, seqlen_kv, dim]
@@ -317,13 +315,13 @@ def ref_program_torch(query, key, value, block_indices, cache_seqlens, max_cache
         'b g h d, b h s d -> b g h s')  # [batch_size, num_head_groups, heads_kv, seqlen_kv]
 
     sparse_mask = torch.zeros_like(scores)
-    # Assign mask values based on block_indices
+    # Assign mask values
     for b in range(batch):
         for h in range(heads_kv):
-            valid_indices = block_indices[b, h]  # Extract indices for this batch and head
-            for idx in valid_indices:
-                if idx >= 0:
+            for idx in range(num_blocks):
+                if block_mask[b, h, idx]:
                     sparse_mask[b, :, h, idx * block_size:(idx + 1) * block_size] = 1
+
     scores = scores.masked_fill(sparse_mask == 0, float('-inf'))
 
     range_len = torch.arange(scores.shape[-1], device='cuda').unsqueeze(0)
@@ -360,72 +358,55 @@ def main(batch=64,
          block_size=32):
 
     batch, heads, heads_kv, max_cache_seqlen, dim, dim_v = batch, heads, heads_kv, max_cache_seqlen, dim, dim_v
-    sparse_ratio = sparse_ratio
     block_size = block_size
+    sparse_ratio = sparse_ratio
     qk_flops = 2 * batch * heads * max_cache_seqlen * dim
     pv_flops = 2 * batch * heads * max_cache_seqlen * dim_v
     total_flops = qk_flops + pv_flops
 
-    max_selected_blocks = int(math.ceil(max_cache_seqlen * (1 - sparse_ratio) / block_size))
-    print("max_selected_blocks: ", max_selected_blocks)
     dtype = torch.float16
-    block_H = 64
 
     Q = torch.randn((batch, heads, dim), dtype=dtype, device='cuda')
     K = torch.randn((batch, max_cache_seqlen, heads_kv, dim), dtype=dtype, device='cuda')
     V = torch.randn((batch, max_cache_seqlen, heads_kv, dim_v), dtype=dtype, device='cuda')
     cache_seqlens = torch.randint(1, max_cache_seqlen, (batch,), dtype=torch.int32, device='cuda')
-    # cache_seqlens = torch.full((batch,), max_cache_seqlen, dtype=torch.int32, device='cuda')
     # Ensure at least one element equals cache_seqlen
     random_index = torch.randint(0, batch, (1,), device='cuda').item()  # Select a random index
     cache_seqlens[
         random_index] = max_cache_seqlen  # Assign cache_seqlen to ensure at least one occurrence
 
-    print("cache_seqlens: ", cache_seqlens)
+    num_blocks = (max_cache_seqlen + block_size - 1) // block_size
 
+    valid_num_blocks = torch.ceil(cache_seqlens * (1 - sparse_ratio) / block_size).int()
+    print("valid_num_blocks: ", valid_num_blocks)
     max_valid_num_blocks = torch.ceil(cache_seqlens / block_size).int()
     print("max_valid_num_blocks: ", max_valid_num_blocks)
-    # Initialize block_indices with -1 (for padding blocks)
-    block_indices = torch.full((batch, heads_kv, max_selected_blocks),
-                               -1,
-                               dtype=torch.int32,
-                               device='cuda')
+    # Initialize block_mask with false (for padding blocks)
+    block_mask = torch.zeros((batch, heads_kv, num_blocks), dtype=torch.bool, device='cuda')
 
     # Assign valid indices while ensuring no duplicates within each batch-group
     for b in range(batch):
         max_valid_block = max_valid_num_blocks[b].item()  # Max valid blocks for this batch
-        if max_valid_block > 0:  # Ensure there's at least one valid block
+        valid_num_block = valid_num_blocks[b].item()  # Valid blocks for this batch
+        if valid_num_block > 0:  # Ensure there's at least one valid block
             for h in range(heads_kv):
-                valid_indices = torch.randperm(
-                    max_valid_block, device='cuda', dtype=torch.int32)[:max_selected_blocks]
-                block_indices[b, h, :len(valid_indices)] = valid_indices
+                perm = torch.randperm(max_valid_block, device='cuda')[:valid_num_block]
+                block_mask[b, h, perm] = True
 
-    # Sort indices within each batch-group for consistency
-    block_indices, _ = block_indices.sort(dim=-1, descending=True)
-    print("block_indices: ", block_indices)
-    print("block_indices shape: ", block_indices.shape)
-    actual_num_blocks = torch.sum(block_indices != -1, dim=-1).to(torch.int32)[:, 0]
-    print("actual_num_blocks: ", actual_num_blocks)
-    # print(block_indices.shape, actual_num_blocks.shape)
-
-    max_num_blocks = torch.max(max_valid_num_blocks).item()
-    print("max_num_blocks: ", max_num_blocks)
-
-    ref = ref_program_torch(Q, K, V, block_indices, cache_seqlens, max_cache_seqlen, max_num_blocks,
+    ref = ref_program_torch(Q, K, V, block_mask, cache_seqlens, max_cache_seqlen, num_blocks,
                             block_size)
 
-    triton_out = block_sparse_flash_decode_gqa_indice_triton(
+    triton_out = block_sparse_flash_decode_gqa_mask_triton(
         Q,
         K,
         V,
         cache_seqlens,
         max_cache_seqlen,
-        max_selected_blocks,
-        block_indices,
+        block_mask,
         block_size,
     )
 
-    print("max difference: ", torch.max(torch.abs(ref - triton_out)))
+    # print("max difference: ", torch.max(torch.abs(ref - triton_out)))
     assert torch.allclose(
         ref, triton_out, atol=1e-2), "Output mismatch between Triton and reference implementation"
     print("Passed the ref test!")
@@ -434,14 +415,13 @@ def main(batch=64,
     torch.cuda.synchronize()
     start = time.time()
     for _ in range(1000):
-        block_sparse_flash_decode_gqa_indice_triton(
+        block_sparse_flash_decode_gqa_mask_triton(
             Q,
             K,
             V,
             cache_seqlens,
             max_cache_seqlen,
-            max_selected_blocks,
-            block_indices,
+            block_mask,
             block_size,
         )
     torch.cuda.synchronize()
@@ -450,6 +430,7 @@ def main(batch=64,
     avg_time = elapsed_time / 1000
     avg_flops = total_flops / avg_time
     print(f"Average time: {avg_time:.6f} seconds")
+    print(f"Average flops: {avg_flops:.2f} GFLOPS")
 
     # Measure performance of reference implementation
     start = time.time()
@@ -461,6 +442,7 @@ def main(batch=64,
     avg_time_ref = elapsed_time_ref / 1000
     avg_flops_ref = total_flops / avg_time_ref
     print(f"Average time of ref: {avg_time_ref:.6f} seconds")
+    print(f"Average flops of ref: {avg_flops_ref:.2f} GFLOPS")
 
     print(f"Speedup: {avg_time_ref / avg_time:.2f}x")
 

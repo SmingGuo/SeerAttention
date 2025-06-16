@@ -161,6 +161,7 @@ class AttnGate(nn.Module):
             threshold=0.0,
             block_budget=None,
             sparsity_method="threshold",
+            cache_seqlens=None,
         ):  
 
         is_decode = k.shape[1] == 1        
@@ -217,7 +218,7 @@ class AttnGate(nn.Module):
 
 
             if attention_mask.dtype == torch.bool:
-                attn = attn.masked_fill(~attention_mask, -1e20)
+                attn = attn.masked_fill(~attention_mask, -1e4)
             else:
                 attn = attn + attention_mask
             attn = F.softmax(attn, dim=-1)
@@ -226,6 +227,10 @@ class AttnGate(nn.Module):
             elif sparsity_method == "threshold":
                 mask = get_sparse_attn_mask_from_threshold(attn, threshold)
             mask[:, : ,-1] = True
+            for b in range(mask.shape[0]):
+                last_valid_block = math.ceil(cache_seqlens[b] / self.block_size)
+                mask[b, :, last_valid_block-1] = True
+            mask = mask & attention_mask
             
             return mask
         else:

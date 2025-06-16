@@ -161,14 +161,14 @@ def infer(args):
         tokenizer = AutoTokenizer.from_pretrained(
             base_model,
             trust_remote_code=True,
-            padding_side="left",
+            padding_side="right",
             use_fast=True,
         )
     else:
         tokenizer = AutoTokenizer.from_pretrained(
             model_name_or_path, 
             trust_remote_code=True, 
-            padding_side="left",
+            padding_side="right",
             use_fast=True,
         )
     prompt_batch = []
@@ -246,7 +246,7 @@ def infer(args):
             raise ValueError(f"model: {model_name_or_path} not supported in SeerDecoding")
         
         model = model_class.from_pretrained(model_name_or_path,
-                                            torch_dtype=torch.bfloat16,
+                                            torch_dtype=torch.float16,
                                             device_map=device,
                                             load_gate = args.attention_implementation == "seer_sparse",
                                             use_cache=True,
@@ -260,6 +260,7 @@ def infer(args):
                                             fused_norm=args.use_fused_kernel,
                                             seerattn_output_sparsity=args.profile_sparsity,
                                             seerattn_start_layer=args.start_layer,
+                                            batch_size=args.batch_size,
         )
     elif args.attention_implementation == "quest":
         if "qwen3" in model_name_or_path.lower():
@@ -306,9 +307,10 @@ def infer(args):
         attention_mask = tokenized_prompts.attention_mask
 
 
+
         if args.use_batch_exist:
             if args.attention_implementation == "seer_sparse" or args.attention_implementation == "oracle_sparse":
-                outputs, batch_sparsitys_info = model.batch_exist_generate(
+                outputs, batch_sparsitys_info = model.batch_generate(
                     input_ids=batch_input_ids,
                     attention_mask=attention_mask,
                     max_length = args.max_tokens,

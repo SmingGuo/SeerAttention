@@ -79,6 +79,7 @@ class SeerAttnQwen2Config(PretrainedConfig):
         seerattn_implementation="seer_sparse", # [seer_sparse, seer_dense, oracle_sparse]
         seerattn_start_layer=0,  # the first layer to use seerattn, inclusive
         seerattn_output_sparsity=False,
+        batch_size=8,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -105,7 +106,7 @@ class SeerAttnQwen2Config(PretrainedConfig):
         self.fused_norm = fused_norm
         self.use_flash_rope = use_flash_rope
         
-        
+        self.batch_size = batch_size
         self.seerattn_sparsity_method = seerattn_sparsity_method
         self.seerattn_sliding_window_size = seerattn_sliding_window_size
         self.seerattn_token_budget = seerattn_token_budget

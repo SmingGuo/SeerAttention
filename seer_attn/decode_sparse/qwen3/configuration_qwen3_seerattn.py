@@ -81,6 +81,7 @@ class SeerAttnQwen3Config(PretrainedConfig):
         seerattn_implementation="seer_sparse", # [seer_sparse, seer_dense, oracle_sparse]
         seerattn_start_layer=0,  # the first layer to use seerattn, inclusive
         seerattn_output_sparsity=False,
+        batch_size=8,
         **kwargs,
     ):
         self.vocab_size = vocab_size
@@ -92,6 +93,7 @@ class SeerAttnQwen3Config(PretrainedConfig):
         self.use_sliding_window = use_sliding_window
         self.sliding_window = sliding_window  # we check `use_sliding_window` in the modeling code
         self.max_window_layers = max_window_layers
+        self.batch_size = batch_size
 
         # for backward compatibility
         if num_key_value_heads is None:

@@ -38,10 +38,10 @@ from ..attention_forward_sparse import sparse_flash_attention_forward
 from ..attention_forward_dense import dense_flash_attention_forward
 from ...modules.layernorm import RMSNorm
 from flash_attn.layers.rotary import apply_rotary_emb_func
-from ...decode_sparse.cache_utils import KCompressionCache
+from ...decode_sparse.cache_utils import KCompressionCache, StaticCache
 from ...modules.common import apply_rotary_pos_emb
-
-
+# from seer_attn.kernels.varlen.tilelang_sparse_gqa_decode_varlen_mask import SparseFlashAttn
+from seer_attn.kernels.varlen.tilelang_sparse_gqa_decode_varlen_indice_noat import SparseFlashAttn
 
 from huggingface_hub import hf_hub_download
 
@@ -142,7 +142,6 @@ class Qwen3SeerAttention(nn.Module):
         self.block_sliding_window_size = config.seerattn_sliding_window_size // config.seerattn_gate_block_size
         self.seerattn_start_layer = config.seerattn_start_layer
 
-
     def forward(
         self,
         hidden_states: torch.Tensor,
@@ -155,6 +154,7 @@ class Qwen3SeerAttention(nn.Module):
         position_embeddings_gate_q: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None, ## block position embeddings
         block_attention_mask: Optional[torch.Tensor] = None, ## block attention mask
+        sparse_decode_kernel: Optional[callable] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
 
@@ -184,10 +184,12 @@ class Qwen3SeerAttention(nn.Module):
             q, k = apply_rotary_pos_emb(q, k, cos, sin, unsqueeze_dim=2)
 
         if past_key_value is not None:
-            cache_kwargs = {"sin": sin, "cos": cos, "cache_position": cache_position}
-            k, v = past_key_value.update(k.flatten(-2, -1), v.flatten(-2, -1), self.layer_idx, cache_kwargs)
+            k, v = past_key_value.update(k.flatten(-2, -1), v.flatten(-2, -1), self.layer_idx, cache_seqlens)
+            k = k.contiguous()
+            v = v.contiguous()
             k = rearrange(k, '... (h d) -> ... h d', d=self.head_dim)
             v = rearrange(v, '... (h d) -> ... h d', d=self.head_dim)
+            
 
         if self.seerattn_implementation != "seer_dense":
             if self.seerattn_implementation == "seer_sparse":
@@ -203,6 +205,7 @@ class Qwen3SeerAttention(nn.Module):
                     threshold=self.config.seerattn_threshold,
                     block_budget=self.block_budget,
                     sparsity_method=self.config.seerattn_sparsity_method,
+                    cache_seqlens=cache_seqlens,
                 )
             else:
                 block_sparse_mask = compute_oracle_sparse_mask(
@@ -221,6 +224,7 @@ class Qwen3SeerAttention(nn.Module):
             activate_block_count = block_sparse_mask.sum()   # block_sparse_mask in shape batch, kv_heads, seq(block)
             original_block_count = block_attention_mask.sum() * self.config.num_key_value_heads # block_attention_mask in shape batch, 1, seq(block)
             activate_and_original_block_count = (activate_block_count.item(), original_block_count.item())
+
 
         if self.config.seerattn_implementation == "seer_dense" or self.layer_idx < self.seerattn_start_layer:
             attn_output = dense_flash_attention_forward(
@@ -243,9 +247,13 @@ class Qwen3SeerAttention(nn.Module):
                 cache_seqlens=cache_seqlens,
                 block_mask=block_sparse_mask,
                 block_size=self.config.seerattn_gate_block_size,
+                max_sel_blocks=min(self.block_budget, math.ceil(k.shape[1] / self.config.seerattn_gate_block_size)),
+                sparse_decode_kernel=sparse_decode_kernel,
             )
         
-
+        # if self.layer_idx == 0 and q_len == 1:
+        #     print("attn_output:", attn_output[:,0,:])
+        #     print("attn_output shape:", attn_output.shape)
         attn_output = attn_output.reshape(*input_shape, -1).contiguous()
         attn_output = self.o_proj(attn_output)
 
@@ -285,6 +293,7 @@ class Qwen3DecoderLayer(nn.Module):
         position_embeddings_gate_q: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_attention_mask: Optional[torch.Tensor] = None,
+        sparse_decode_kernel: Optional[callable] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
 
@@ -305,6 +314,7 @@ class Qwen3DecoderLayer(nn.Module):
             position_embeddings_gate_q=position_embeddings_gate_q,
             block_position_embeddings=block_position_embeddings,
             block_attention_mask=block_attention_mask,
+            sparse_decode_kernel=sparse_decode_kernel,
             **kwargs,
         )
         if self.fused_norm:
@@ -436,6 +446,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         self.gradient_checkpointing = False
         self.num_layers = config.num_hidden_layers
+        self.sparse_decode_kernel = SparseFlashAttn(config.batch_size, config.num_attention_heads, config.num_key_value_heads, config.head_dim, config.head_dim, config.seerattn_gate_block_size)
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -531,6 +542,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 position_embeddings_gate_q=position_embeddings_gate_q,
                 block_position_embeddings=block_position_embeddings,
                 block_attention_mask=block_attention_mask,
+                sparse_decode_kernel = self.sparse_decode_kernel,
             )
 
             hidden_states = layer_outputs[0]
@@ -577,9 +589,10 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
+        self.hidden_size = config.hidden_size
         self.num_layers = config.num_hidden_layers
         self.block_size = config.seerattn_gate_block_size
-
+        self.config = config
         self.post_init()
 
     def get_input_embeddings(self):
@@ -765,6 +778,104 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         # Pad finished sequences back to original batch size if needed
         return generated, sparsitys_info_list
 
+    def batch_generate(
+        self,
+        input_ids: torch.LongTensor,
+        attention_mask: Optional[torch.LongTensor] = None,
+        max_length: int = 100,
+        do_sample: bool = False,
+        **model_kwargs,
+    ):
+        # 初始化变量
+        generated = input_ids
+        generation_config, model_kwargs = self._prepare_generation_config(None)
+        initial_batch_size = input_ids.shape[0]
+        device = input_ids.device
+        if isinstance(generation_config.eos_token_id, list):
+            eos_token_id = generation_config.eos_token_id[0]
+        else:
+            eos_token_id = generation_config.eos_token_id
+
+        finished = torch.zeros(initial_batch_size, dtype=torch.bool, device=device)
+        current_kvcache = StaticCache(
+            max_batch_size=initial_batch_size,
+            max_cache_len=max_length,
+            device=device,
+            dtype=self.dtype,
+            num_layers=self.num_layers,
+            hidden_size=self.config.head_dim* self.config.num_key_value_heads,
+        )
+        current_kcompressed_cache = KCompressionCache(self.num_layers, self.block_size)
+        cur_input = input_ids  # 初始输入
+
+        # 计算序列长度
+        if attention_mask is not None:
+            seq_lengths = attention_mask.sum(dim=1)
+        else:
+            seq_lengths = torch.full((initial_batch_size,), input_ids.size(1), device=device)
+
+        # 初始化 positions 为 seq_lengths
+        positions = seq_lengths
+
+        sparsitys_info_list = []
+        for step in range(max_length):
+            with torch.no_grad():
+                outputs = self(
+                    cur_input,
+                    attention_mask=attention_mask,
+                    past_key_values=current_kvcache,
+                    k_compressed_cache=current_kcompressed_cache,
+                    use_cache=True,
+                    logits_to_keep=1,
+                )
+            logits = outputs.logits.squeeze(1).float()
+            if outputs.sparsitys_info:
+                sparsitys_info_list.append(outputs.sparsitys_info)
+
+            # 选择下一个 token
+            if do_sample:
+                logits /= generation_config.temperature
+                top_p_warper = TopPLogitsWarper(top_p=generation_config.top_p, min_tokens_to_keep=1)
+                processed_logits = top_p_warper(cur_input, logits)
+                probs = torch.softmax(processed_logits, dim=-1)
+                next_tokens = torch.multinomial(probs, num_samples=1)
+            else:
+                next_tokens = torch.argmax(logits, dim=-1, keepdim=True)
+
+            # 更新缓存
+            current_kvcache = outputs.past_key_values
+            current_kcompressed_cache = outputs.k_compressed_cache
+
+            # 为已完成序列设置 EOS
+            next_tokens = torch.where(
+                finished.unsqueeze(1),
+                torch.tensor(eos_token_id, device=device, dtype=next_tokens.dtype),
+                next_tokens
+            )
+
+            # 更新 generated 和 attention_mask
+            new_tokens_full = torch.full((initial_batch_size, 1), eos_token_id,
+                                        dtype=next_tokens.dtype, device=device)
+            generated = torch.cat([generated, new_tokens_full], dim=1)
+            generated = generated.scatter(1, positions.unsqueeze(1), next_tokens)
+            if attention_mask is not None:
+                attention_mask = torch.cat([attention_mask, torch.zeros((attention_mask.size(0), 1), device=device)], dim=1)
+                attention_mask = attention_mask.scatter(1, positions.unsqueeze(1), torch.ones_like(positions.unsqueeze(1), dtype=attention_mask.dtype))
+
+            # 更新 finished 标志
+            new_finished = torch.isin(next_tokens.squeeze(1), torch.tensor(generation_config.eos_token_id, device=device)) if isinstance(generation_config.eos_token_id, list) else (next_tokens.squeeze(1) == eos_token_id)
+            finished = finished | new_finished
+
+            # 提前终止
+            if finished.all():
+                break
+
+            # 更新 cur_input 和 positions
+            cur_input = torch.gather(generated, 1, positions.unsqueeze(1))
+            positions = positions + 1
+            positions = torch.clamp(positions, max=max_length - 1)
+
+        return generated, sparsitys_info_list
 
     @classmethod
     def from_pretrained(cls, pretrained_model_name_or_path, load_gate=True, *model_args, **kwargs):
