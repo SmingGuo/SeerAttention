@@ -226,7 +226,7 @@ class AttnGate(nn.Module):
                 mask = get_sparse_attn_mask_from_budget(attn, block_budget, attention_mask)
             elif sparsity_method == "threshold":
                 mask = get_sparse_attn_mask_from_threshold(attn, threshold)
-            mask[:, : ,-1] = True
+            # mask[:, : ,-1] = True
             for b in range(mask.shape[0]):
                 last_valid_block = math.ceil(cache_seqlens[b] / self.block_size)
                 mask[b, :, last_valid_block-1] = True

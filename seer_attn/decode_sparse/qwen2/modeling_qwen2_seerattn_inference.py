@@ -755,7 +755,6 @@ class SeerDecodingQwen2ForCausalLM(Qwen2PreTrainedModel, GenerationMixin):
         do_sample: bool = False,
         **model_kwargs,
     ):
-        # 初始化变量
         generated = input_ids
         generation_config, model_kwargs = self._prepare_generation_config(None)
         initial_batch_size = input_ids.shape[0]

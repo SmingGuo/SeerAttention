@@ -4,7 +4,7 @@ output_dir="./result_seer_sparse"
 attention_implementation="seer_sparse"
 max_tokens=32768
 num_gpus=1
-limit=2
+limit=4
 
 # tasks="aime24,aime25,math,gpqa"
 tasks="math"

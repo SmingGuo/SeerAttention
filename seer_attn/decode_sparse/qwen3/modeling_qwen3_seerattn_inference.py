@@ -446,7 +446,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         self.gradient_checkpointing = False
         self.num_layers = config.num_hidden_layers
-        self.sparse_decode_kernel = SparseFlashAttn(config.batch_size, config.num_attention_heads, config.num_key_value_heads, config.head_dim, config.head_dim, config.seerattn_gate_block_size)
+        
 
         # Initialize weights and apply final processing
         self.post_init()
@@ -469,6 +469,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         output_attentions: Optional[bool] = None,
         output_hidden_states: Optional[bool] = None,
         cache_position: Optional[torch.LongTensor] = None,
+        sparse_decode_kernel: Optional[callable] = None,
     ) -> Union[Tuple, BaseModelOutputWithPastAndCache]:
         output_attentions = output_attentions if output_attentions is not None else self.config.output_attentions
         output_hidden_states = (
@@ -542,7 +543,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 position_embeddings_gate_q=position_embeddings_gate_q,
                 block_position_embeddings=block_position_embeddings,
                 block_attention_mask=block_attention_mask,
-                sparse_decode_kernel = self.sparse_decode_kernel,
+                sparse_decode_kernel = sparse_decode_kernel,
             )
 
             hidden_states = layer_outputs[0]
@@ -586,12 +587,14 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def __init__(self, config):
         super().__init__(config)
+
         self.model = Qwen3Model(config)
         self.vocab_size = config.vocab_size
         self.lm_head = nn.Linear(config.hidden_size, config.vocab_size, bias=False)
         self.hidden_size = config.hidden_size
         self.num_layers = config.num_hidden_layers
         self.block_size = config.seerattn_gate_block_size
+        self.sparse_decode_kernel = SparseFlashAttn(config.batch_size, config.num_attention_heads, config.num_key_value_heads, config.head_dim, config.head_dim, config.seerattn_gate_block_size)
         self.config = config
         self.post_init()
 
@@ -647,6 +650,7 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             output_attentions=output_attentions,
             output_hidden_states=output_hidden_states,
             cache_position=cache_position,
+            sparse_decode_kernel=self.sparse_decode_kernel,
         )
 
         hidden_states = outputs.last_hidden_state
@@ -790,6 +794,9 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         generated = input_ids
         generation_config, model_kwargs = self._prepare_generation_config(None)
         initial_batch_size = input_ids.shape[0]
+        if initial_batch_size != self.config.batch_size:
+            self.sparse_decode_kernel = SparseFlashAttn(initial_batch_size, self.config.num_attention_heads, self.config.num_key_value_heads, self.config.head_dim, self.config.head_dim, self.config.seerattn_gate_block_size)
+
         device = input_ids.device
         if isinstance(generation_config.eos_token_id, list):
             eos_token_id = generation_config.eos_token_id[0]
