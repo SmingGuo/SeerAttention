@@ -184,7 +184,7 @@ class AttnGate(nn.Module):
                 else:
                     q = apply_rotary_pos_emb_single(q, cos, sin, unsqueeze_dim=2)
 
-            k = k_compressed_cache.update(k=k, layer_idx=layer_idx, is_decode=is_decode)
+            k = k_compressed_cache.update(k=k, layer_idx=layer_idx, is_decode=is_decode, cache_seqlens=cache_seqlens)
 
             if max_cache_len % self.block_size == 0:
                 remainder = k_compressed_cache.get_k_remainder(layer_idx)
@@ -199,10 +199,10 @@ class AttnGate(nn.Module):
                 if position_embeddings is not None:
                     cos, sin = position_embeddings ## change to positional embedding instead of block_position_embeddings
                     if self.use_flash_rope:
-                        k = apply_rotary_emb_func(k_compressed, cos, sin, False, True, cu_seqlens=None, max_seqlen=1)
+                        k_compressed = apply_rotary_emb_func(k_compressed, cos, sin, False, True, cu_seqlens=None, max_seqlen=1)
                     else:
-                        k = apply_rotary_pos_emb_single(k_compressed, cos, sin, unsqueeze_dim=2)
-                k_compressed = k_compressed_cache.update(k_compressed=k_compressed, layer_idx=layer_idx, is_decode=is_decode)
+                        k_compressed = apply_rotary_pos_emb_single(k_compressed, cos, sin, unsqueeze_dim=2)
+                k = k_compressed_cache.update(k_compressed=k_compressed, layer_idx=layer_idx, is_decode=is_decode, cache_seqlens=cache_seqlens)
 
 
             q = q.squeeze(1) 
@@ -215,7 +215,6 @@ class AttnGate(nn.Module):
             else: 
                 attn = torch.einsum('bhd,bshd->bhs', q, k)
                 attn = attn * (1 / math.sqrt(self.gate_hidden_size))
-
 
             if attention_mask.dtype == torch.bool:
                 attn = attn.masked_fill(~attention_mask, -1e4)
@@ -230,8 +229,10 @@ class AttnGate(nn.Module):
             for b in range(mask.shape[0]):
                 last_valid_block = math.ceil(cache_seqlens[b] / self.block_size)
                 mask[b, :, last_valid_block-1] = True
+            mask[:,:,:] = True
             mask = mask & attention_mask
-            
+            # print("attention_mask:", attention_mask[:,0,:])
+
             return mask
         else:
             k_pooled = [pool_func(k, kernel_size=[self.block_size, 1, 1], stride=[self.block_size, 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
@@ -253,7 +254,7 @@ class AttnGate(nn.Module):
                 k_compressed[:, -1, :, :] = 0.0
             else:
                 k_remainder = None
-            k = k_compressed_cache.update(layer_idx=layer_idx, k_compressed=k_compressed, k_remainder=k_remainder, is_decode=is_decode)
+            k = k_compressed_cache.update(layer_idx=layer_idx, k_compressed=k_compressed, k_remainder=k_remainder, is_decode=is_decode, cache_seqlens=cache_seqlens)
             return None
 
 

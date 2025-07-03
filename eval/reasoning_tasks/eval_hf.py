@@ -141,7 +141,8 @@ def infer(args):
     print(args)
     model_name_or_path = args.model_name_or_path
     print(f"current eval model: {model_name_or_path}")
-    device = f"cuda:{args.rank}"
+    # device = f"cuda:{args.rank}"
+    device = "cuda"
 
     generate_lens = []
     
@@ -246,7 +247,7 @@ def infer(args):
             raise ValueError(f"model: {model_name_or_path} not supported in SeerDecoding")
         
         model = model_class.from_pretrained(model_name_or_path,
-                                            torch_dtype=torch.float16,
+                                            torch_dtype=torch.bfloat16,
                                             device_map=device,
                                             load_gate = args.attention_implementation == "seer_sparse",
                                             use_cache=True,
@@ -283,7 +284,7 @@ def infer(args):
     elif args.attention_implementation == "sdpa":
         model = AutoModelForCausalLM.from_pretrained(model_name_or_path,
                                                     torch_dtype=torch.bfloat16,
-                                                    device_map=f"cuda:{args.rank}",
+                                                    device_map=device,
                                                     use_cache=True,
                                                     trust_remote_code=True)
     else:

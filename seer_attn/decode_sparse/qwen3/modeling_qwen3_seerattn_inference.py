@@ -503,7 +503,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
 
-        cache_seqlens = torch.sum(attention_mask.to(torch.int32), dim=-1, dtype=torch.int32) 
+        cache_seqlens = torch.sum(attention_mask, dim=-1, dtype=torch.int32) 
 
         hidden_states = inputs_embeds
 
@@ -784,12 +784,13 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
 
     def batch_generate(
         self,
-        input_ids: torch.LongTensor,
-        attention_mask: Optional[torch.LongTensor] = None,
+        input_ids: torch.Tensor,
+        attention_mask: Optional[torch.Tensor] = None,
         max_length: int = 100,
         do_sample: bool = False,
         **model_kwargs,
     ):
+
         # 初始化变量
         generated = input_ids
         generation_config, model_kwargs = self._prepare_generation_config(None)
@@ -806,13 +807,22 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
         finished = torch.zeros(initial_batch_size, dtype=torch.bool, device=device)
         current_kvcache = StaticCache(
             max_batch_size=initial_batch_size,
-            max_cache_len=max_length,
+            max_cache_len=max_length + 1024,
             device=device,
             dtype=self.dtype,
             num_layers=self.num_layers,
             hidden_size=self.config.head_dim* self.config.num_key_value_heads,
         )
-        current_kcompressed_cache = KCompressionCache(self.num_layers, self.block_size)
+        current_kcompressed_cache = KCompressionCache(
+            num_layers = self.num_layers,
+            block_size = self.block_size,
+            max_cache_len = max_length + 1024,
+            batch_size = initial_batch_size,
+            num_heads = self.config.num_key_value_heads,
+            head_dim = self.config.head_dim,
+            device=device,
+            dtype=self.dtype,
+        )
         cur_input = input_ids  # 初始输入
 
         # 计算序列长度
@@ -839,7 +849,6 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             if outputs.sparsitys_info:
                 sparsitys_info_list.append(outputs.sparsitys_info)
 
-            # 选择下一个 token
             if do_sample:
                 logits /= generation_config.temperature
                 top_p_warper = TopPLogitsWarper(top_p=generation_config.top_p, min_tokens_to_keep=1)
@@ -849,11 +858,12 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             else:
                 next_tokens = torch.argmax(logits, dim=-1, keepdim=True)
 
-            # 更新缓存
+            if step == 0:
+                print("next_tokens", next_tokens)
+
             current_kvcache = outputs.past_key_values
             current_kcompressed_cache = outputs.k_compressed_cache
 
-            # 为已完成序列设置 EOS
             next_tokens = torch.where(
                 finished.unsqueeze(1),
                 torch.tensor(eos_token_id, device=device, dtype=next_tokens.dtype),
@@ -866,7 +876,7 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             generated = torch.cat([generated, new_tokens_full], dim=1)
             generated = generated.scatter(1, positions.unsqueeze(1), next_tokens)
             if attention_mask is not None:
-                attention_mask = torch.cat([attention_mask, torch.zeros((attention_mask.size(0), 1), device=device)], dim=1)
+                attention_mask = torch.cat([attention_mask, torch.zeros((attention_mask.size(0), 1), device=device,dtype=attention_mask.dtype)], dim=1)
                 attention_mask = attention_mask.scatter(1, positions.unsqueeze(1), torch.ones_like(positions.unsqueeze(1), dtype=attention_mask.dtype))
 
             # 更新 finished 标志
@@ -880,7 +890,7 @@ class SeerDecodingQwen3ForCausalLM(Qwen3PreTrainedModel, GenerationMixin):
             # 更新 cur_input 和 positions
             cur_input = torch.gather(generated, 1, positions.unsqueeze(1))
             positions = positions + 1
-            positions = torch.clamp(positions, max=max_length - 1)
+            positions = torch.clamp(positions, max=max_length + 1024 - 1)
 
         return generated, sparsitys_info_list
 

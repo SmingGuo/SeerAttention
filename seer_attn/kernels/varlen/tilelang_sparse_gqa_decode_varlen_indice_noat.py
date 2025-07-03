@@ -15,7 +15,7 @@ from seer_attn.kernels.varlen.utils import num_splits_heuristic
 
 def flashattn(batch, heads, heads_kv, dim, dim_v):
     scale = (1.0 / dim)**0.5 * 1.44269504  # log2(e)
-    dtype = "float16"
+    dtype = "bfloat16"
     accum_dtype = "float"
     kv_group_num = heads // heads_kv
 
@@ -215,7 +215,7 @@ class SparseFlashAttn(torch.nn.Module):
         self.kernel = tilelang.compile(
             program, out_idx=-1, target='cuda', execution_backend="cython")
 
-        props = torch.cuda.get_device_properties(torch.device("cuda:0"))
+        props = torch.cuda.get_device_properties(torch.device("cuda"))
         self.num_sm = props.multi_processor_count
 
     def forward(self, query, key, value, block_indices, cache_seqlens):
@@ -411,7 +411,7 @@ def main(batch=8,
     block_size = block_size
     max_selected_blocks = int(math.ceil(max_cache_seqlen * (1 - sparse_ratio) / block_size))
     print("max_selected_blocks: ", max_selected_blocks)
-    dtype = torch.float16
+    dtype = torch.bfloat16
 
     Q = torch.randn((batch, heads, dim), dtype=dtype, device='cuda')
     K = torch.randn((batch, max_cache_seqlen, heads_kv, dim), dtype=dtype, device='cuda')

@@ -10,6 +10,7 @@ from seer_attn.kernels.varlen.block_sparse_flash_decode_varlen_mask_leftpad impo
 from seer_attn.kernels.varlen.triton_sparse_gqa_decode_varlen_mask import block_sparse_flash_decode_gqa_mask_triton
 from seer_attn.kernels.varlen.triton_sparse_gqa_decode_varlen_indice import block_sparse_flash_decode_gqa_indice_triton
 from einops import rearrange
+import math
 import os
 
 def convert_mask2indices(block_mask, max_selected_blocks):
@@ -25,11 +26,11 @@ def convert_mask2indices(block_mask, max_selected_blocks):
     # 降序排序（选中的大索引靠前）
     sorted_adj, _ = adjusted.sort(dim=-1, descending=True)
     
-    # 截取前 max_selected_blocks 个
-    selected = sorted_adj[..., :max_selected_blocks]
+    # # 截取前 max_selected_blocks 个
+    # selected = sorted_adj[..., :max_selected_blocks]
     
     # 将填充值替换为 -1
-    block_indices = torch.where(selected < 0, -1, selected)
+    block_indices = torch.where(sorted_adj < 0, -1, sorted_adj)
     
     return block_indices
 
@@ -132,6 +133,18 @@ def _upad_input(
         (max_seqlen_in_batch_q, max_seqlen_in_batch_k),
     )
 
+def repeat_kv(hidden_states: torch.Tensor, n_rep: int) -> torch.Tensor:
+    """
+    This is the equivalent of torch.repeat_interleave(x, dim=1, repeats=n_rep). The hidden states go from (batch,
+    num_key_value_heads, seqlen, head_dim) to (batch, num_attention_heads, seqlen, head_dim)
+    """
+    batch, num_key_value_heads, slen, head_dim = hidden_states.shape
+    if n_rep == 1:
+        return hidden_states
+    hidden_states = hidden_states[:, :, None, :, :].expand(batch, num_key_value_heads, n_rep, slen, head_dim)
+    return hidden_states.reshape(batch, num_key_value_heads * n_rep, slen, head_dim)
+
+
 def sparse_flash_attention_forward(
     query_states: torch.Tensor,
     key_states: torch.Tensor,
@@ -148,6 +161,36 @@ def sparse_flash_attention_forward(
 ):
 
     if query_length > 1:
+        
+        # q = query_states.transpose(1, 2)
+        # k = key_states.transpose(1, 2)
+        # v = value_states.transpose(1, 2)
+        # k = repeat_kv(k, q.shape[1] // k.shape[1])
+        # v = repeat_kv(v, q.shape[1] // v.shape[1])
+        # attention_mask = attention_mask.to(torch.bool)
+        # expanded_attn_mask = attention_mask.unsqueeze(1) & attention_mask.unsqueeze(2)
+
+        # seq_len = q.size(2)
+        # causal_mask = torch.tril(torch.ones(seq_len, seq_len, device=q.device, dtype=torch.bool))  
+        
+        # effective_mask = expanded_attn_mask & causal_mask[None,:,:]  # (batch_size, seq_len, seq_len)
+
+        # scores = torch.matmul(q, k.transpose(-1, -2)) / math.sqrt(q.size(-1))  # (batch_size, heads, seq_len, seq_len)
+        # # Apply mask to scores
+        # scores = scores.masked_fill(~effective_mask[:, None, :], float('-inf'))
+
+        # # Compute attention weights with softmax
+        # all_inf_mask = scores.isinf().all(dim=-1, keepdim=True)  # (batch_size, heads, seq_len, 1)
+        # scores_noinf = scores.masked_fill(all_inf_mask, 0.0) 
+
+        # # Compute attention weights with softmax
+        # attn_weights = torch.nn.functional.softmax(scores_noinf, dim=-1)
+        # attn_weights = torch.where(all_inf_mask, 0.0, attn_weights) 
+
+        # # Compute output
+        # attn_output = torch.matmul(attn_weights, v)  # (batch_size, heads, seq_len, hidden_size)
+        # attn_output = attn_output.transpose(1, 2)  # ( batch_size, seq_len, heads, hidden_size)
+
         # assert attention_mask is not None, "Attention mask must be provided for Flash Attention."
         if attention_mask is None:
             attention_mask = torch.ones(
@@ -171,47 +214,12 @@ def sparse_flash_attention_forward(
             softmax_scale=softmax_scale,
             causal=True,
         )
-        # print("attn_output_unpad:")
-        # with open("atttnoutput.txt","w") as f:
-        #     for i in range(attn_output_unpad.shape[0]):
-        #         f.write(f"{i}: {attn_output_unpad[i,0,:5]}\n")
-        # print("attn_output_unpad shape:", attn_output_unpad.shape)
-        # print("indices_q:",indices_q)
         attn_output = pad_input(attn_output_unpad, indices_q, batch_size, query_length)
-        # print("attn_output:", attn_output[:,:,0,20])
-        # print("attn_output 0:", torch.sum(torch.any(attn_output[0, :, 0, :] != 0, dim=-1)).item())
-        # print("attn_output 1:", torch.sum(torch.any(attn_output[1, :, 0, :] != 0, dim=-1)).item())
-        # print("attn_output 2:", torch.sum(torch.any(attn_output[2, :, 0, :] != 0, dim=-1)).item())
-        # print("attn_output shape:", attn_output.shape)
+
     else:
         query_states = query_states.squeeze(1)
-        # block_mask = torch.ones_like(block_mask, dtype=torch.bool)
-        # print("block_mask:", block_mask[:,0,:])
-        # print("block_mask shape:", block_mask.shape)
         block_indices = convert_mask2indices(block_mask, max_selected_blocks=max_sel_blocks)
-        # print("block_indices:", block_indices[:,0,:])
-        # print("block_indices shape:", block_indices.shape)
         attn_output = sparse_decode_kernel(query_states, key_states, value_states, block_indices, cache_seqlens)
-        # attn_output = block_sparse_flash_decode_gqa_indice_triton(
-        #     query_states,
-        #     key_states,
-        #     value_states,
-        #     cache_seqlens,
-        #     key_states.shape[1],
-        #     max_sel_blocks,
-        #     block_indices,
-        #     block_size,
-        # )
-
-        # attn_output = block_sparse_flash_decode_gqa_mask_triton(
-        #     query_states, # [batch_size, num_heads, head_dim] or [batch_size, 1, num_heads, head_dim]
-        #     key_states, # [batch_size, max_cache_len, num_key_value_heads, head_dim]
-        #     value_states, # [batch_size, max_cache_len, num_key_value_heads, head_dim]
-        #     cache_seqlens=cache_seqlens, # [batch_size]
-        #     max_cache_seqlen=key_states.shape[1],
-        #     block_mask=block_mask,
-        #     block_size=block_size,
-        # )
 
     return attn_output
 

@@ -1,20 +1,31 @@
 from typing import Any, Dict, List, Optional, Tuple, Union
 import torch
-
+import math
 from transformers.cache_utils import Cache
 
 class KCompressionCache(Cache):
 
-    def __init__(self, num_layers: int, block_size: int) -> None:
+    def __init__(self, num_layers: int, block_size: int, max_cache_len: int, batch_size: int, num_heads: int, head_dim: int, device: torch.device, dtype: torch.dtype) -> None:
         super().__init__()
         self.num_layers = num_layers
         self.block_size = block_size
+        self.max_cache_len = max_cache_len  
+        self.batch_size = batch_size        
+        self.num_heads = num_heads          
+        self.head_dim = head_dim            
+        self.device = device                
+        self.dtype = dtype
         # initialize caches for each layer
         self.k_compressed: Dict[int, Optional[torch.Tensor]] = {}
         self.k_remainder: Dict[int, Optional[torch.Tensor]] = {}
         for layer in range(num_layers):
-            self.k_compressed[layer] = None  
-            self.k_remainder[layer] = None  
+            # k_compressed: [batch_size, max_num_blocks, num_heads, head_dim]
+            max_num_blocks = (max_cache_len + block_size - 1) // block_size  # 计算最大块数
+            self.k_compressed[layer] = torch.zeros(
+                [batch_size, max_num_blocks, num_heads, head_dim], device=device, dtype=dtype)
+            # k_remainder: [batch_size, block_size, num_heads, head_dim]
+            self.k_remainder[layer] = torch.zeros(
+                [batch_size, block_size, num_heads, head_dim], device=device, dtype=dtype)
 
     def __getitem__(self, layer_idx: int) -> List[Tuple[torch.Tensor, Optional[torch.Tensor]]]:
         # Return a tuple of (k_cache, k_remainder) for a given layer.
@@ -35,17 +46,17 @@ class KCompressionCache(Cache):
         k_compressed: Optional[torch.Tensor] = None,
         k_remainder: Optional[torch.Tensor] = None, 
         is_decode: bool = False,
-        max_seqlen: Optional[int] = None,
+        cache_seqlens: Optional[torch.Tensor] = None,
     ) -> torch.Tensor:
-
+        k_compressed_len = math.ceil(cache_seqlens.max().item() / self.block_size)
         if k_compressed is not None:
             if is_decode:
-                self.k_compressed[layer_idx][:, -1:, :, :] = k_compressed
+                for b in range(self.batch_size):
+                    pos = cache_seqlens[b]
+                    self.k_compressed[layer_idx][b, pos//self.block_size - 1, :, :] = k_compressed[b, :, :, :]
+                self.remainder_len %= self.block_size
             else:
-                self.k_compressed[layer_idx] = k_compressed
-                bsz = k_compressed.shape[0]
-                self.k_remainder[layer_idx] = torch.zeros(
-                    [bsz, self.block_size, k_compressed.shape[2], k_compressed.shape[3]], device=k_compressed.device, dtype=k_compressed.dtype)
+                self.k_compressed[layer_idx][:,:k_compressed.shape[1],:,:] = k_compressed
                 if k_remainder is not None:        
                     self.k_remainder[layer_idx][:, :k_remainder.shape[1],] = k_remainder
                 
@@ -54,17 +65,14 @@ class KCompressionCache(Cache):
 
 
         elif k is not None:
-            self.k_remainder[layer_idx][:, self.remainder_len:self.remainder_len + 1, :, :] = k
             if layer_idx == 0:
                 self.remainder_len += 1
-                self.remainder_len %= self.block_size
-            if self.remainder_len == 1:
-                b, _, h, d = self.k_compressed[layer_idx].shape
-                dtype, devcie = self.k_compressed[layer_idx].dtype, self.k_compressed[layer_idx].device
-                self.k_compressed[layer_idx] = torch.cat(
-                    [self.k_compressed[layer_idx], torch.zeros([b, 1, h, d], device=devcie, dtype=dtype)], dim=1)
+            for b in range(self.batch_size):
+                pos = cache_seqlens[b]
+                self.k_remainder[layer_idx][b, self.remainder_len-1, :, :] = k[b, :, :, :]
+            
 
-        return self.k_compressed[layer_idx]
+        return self.k_compressed[layer_idx][:,:k_compressed_len,:,:]
 
 class StaticCache(Cache):
     """
@@ -152,27 +160,17 @@ class StaticCache(Cache):
                 
                 self.key_cache[layer_idx][b, :pos, :] = key_states[b, :pos, :]
                 self.value_cache[layer_idx][b, :pos, :] = value_states[b, :pos, :]
-                # if layer_idx == 0:
-                #     print("pos:", pos)
-                #     print("cur_length:", torch.sum(torch.any(self.key_cache[layer_idx][b] != 0, dim=-1)).item())
             if layer_idx == 0:
                 self.seq_length = key_states.size(1)
-                # print("key_states shape:", key_states.shape, "seq_length:", self.seq_length)
 
         else:
             for b in range(key_states.size(0)):
                 pos = cache_seqlens[b]
-                # print("key_states[b] shape:", key_states[b].shape)
                 self.key_cache[layer_idx][b, pos-1, :] = key_states[b]
                 self.value_cache[layer_idx][b, pos-1, :] = value_states[b]
-                # if layer_idx == 0:
-                #     print("pos:",pos)
-                #     print("cur_length:",torch.sum(torch.any(self.key_cache[layer_idx][b] != 0, dim=-1)).item())
             if layer_idx == 0:
                 self.seq_length += 1
-                # print("key_states shape:", key_states.shape, "seq_length:", self.seq_length)
-        # print("seq_length:", self.seq_length)
-        # print("key_cache shape:", self.key_cache[layer_idx][:self.seq_length].shape)
+
         return self.key_cache[layer_idx][:,:self.seq_length,:], self.value_cache[layer_idx][:,:self.seq_length,:]
 
     def get_max_cache_shape(self) -> Optional[int]:

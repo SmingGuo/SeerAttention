@@ -1,6 +1,7 @@
 # model_dir="SeerAttention/SeerAttention-Decode-R1-Distill-Qwen-14B-AttnGates"
 model_dir="SeerAttention/SeerAttention-Decode-Qwen3-4B-AttnGates"
 output_dir="./result_seer_sparse"
+# output_dir="/mnt/output/results/lm_eval_batch/test"
 attention_implementation="seer_sparse"
 max_tokens=32768
 num_gpus=1
@@ -11,7 +12,7 @@ tasks="math"
 
 block_size="64"    # SeerAttention uses a fixed block size of 64
 sparsity_method="token_budget" 
-token_budget="4096"
+token_budget="1024"
 start_layer=0
 
 # CUDA_LAUNCH_BLOCKING=1 \
@@ -27,4 +28,4 @@ python parallel_run_hf.py \
       --num_gpus "$num_gpus" \
       --limit "$limit" \
       --max_tokens "$max_tokens" \
-      --start_layer "$start_layer"
+      --start_layer "$start_layer" 

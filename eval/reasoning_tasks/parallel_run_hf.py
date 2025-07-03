@@ -11,9 +11,9 @@ def choose_task_config(model_size, output_dir):
     output_dir = output_dir.lower()
     if model_size != "32B":
         task_config = {
-            "aime24": {"bs": 4, "total_run": 16},
+            "aime24": {"bs": 4, "total_run": 4},
             "aime25": {"bs": 15, "total_run": 64},
-            "math": {"bs": 4, "total_run": 2},
+            "math": {"bs": 4, "total_run": 1},
             "gpqa": {"bs": 30, "total_run": 16},
             "olympiadbench": {"bs": 15, "total_run": 8},
             "livecodebench": {"bs": 15, "total_run": 8},
@@ -150,6 +150,7 @@ if __name__ == "__main__":
                         
                         env = os.environ.copy()
                         # env["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+                        env["CUDA_VISIBLE_DEVICES"] = str(gpu_id)
                         cmd = [
                             "python", "eval_hf.py",
                             "--model_name_or_path", model_dir,
