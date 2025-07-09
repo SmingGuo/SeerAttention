@@ -30,7 +30,7 @@ run_name="${prefix}_${headpooling_type}_${gate_type}_bs${bs}_steps${steps}_gdim$
 echo "Running with headpooling type: ${headpooling_type}"
 echo "Run name: ${run_name}"
 
-torchrun --nproc_per_node=$gpus --master_port=10003 distillation_decode.py  \
+torchrun --nproc_per_node=$gpus --master_port=10003 amlt_distillation_decode_filter.py  \
     --base_model $base_model \
     --seerattn_k_seq_pooling_type $gate_type \
     --bf16 True \
