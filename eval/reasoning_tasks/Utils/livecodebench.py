@@ -45,7 +45,15 @@ def compute_scores(jobs, completions, cache_path):
     for i in range(len(jobs)):
         jobs[i]['gen'] = completions[i]
 
-    
+    log_result = {
+        "total_calls": len(jobs),
+        "compile_errors": 0,
+        "runtime_errors": 0,
+        "timeouts": 0,
+        "wrong_answers": 0,
+        "extraction_failed": 0,
+        "passes": 0,
+    }
 
     with ThreadPool(max(1, int(os.cpu_count() * 0.5))) as pool:
         for res, job in tqdm(pool.imap_unordered(work, jobs), total=len(jobs)):
@@ -54,6 +62,19 @@ def compute_scores(jobs, completions, cache_path):
             metadata = res['metadata']
             extraction_failed = metadata.get("error_code", 0) == -1
             results = res['results']
+
+            if metadata.get("error_code", 0) == -5:
+                log_result["compile_errors"] += 1
+            elif metadata.get("error_code", 0) == -4:
+                log_result["runtime_errors"] += 1
+            elif metadata.get("error_code", 0) == -3:
+                log_result["timeouts"] += 1
+            elif metadata.get("error_code", 0) == -2:
+                log_result["wrong_answers"] += 1
+            elif metadata.get("error_code", 0) == -1:
+                log_result["extraction_failed"] += 1
+            else:
+                log_result["passes"] += 1
 
             job.update({
                 "pass-1": ispass,
@@ -64,6 +85,9 @@ def compute_scores(jobs, completions, cache_path):
             save_cache(job, cache_path)
     with open(cache_path, "r") as f:
         jobs = [json.loads(l) for l in f]
+
+    with open(cache_path.replace(".jsonl", "_log.json"), "w") as f:
+        json.dump(log_result, f, indent=4)
 
     # Retry all timeout jobs sequentially (without using multiprocessing)
     new_jobs = []

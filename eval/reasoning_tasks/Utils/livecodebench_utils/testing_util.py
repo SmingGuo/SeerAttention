@@ -430,8 +430,8 @@ def run_test(sample, test=None, debug=False, timeout=6):
                 )
                 return results, metadata
             except Exception as e:
-                return [-4], {
-                    "error_code": -4,
+                return [-5], {
+                    "error_code": -5,
                     "error_message": f"Error during testing: {e}",
                 }
             finally:
@@ -450,8 +450,8 @@ def run_test(sample, test=None, debug=False, timeout=6):
                 )
                 return results, metadata
             except Exception as e:
-                return [-4], {
-                    "error_code": -4,
+                return [-5], {
+                    "error_code": -5,
                     "error_message": f"Error during testing: {e}",
                 }
             finally:

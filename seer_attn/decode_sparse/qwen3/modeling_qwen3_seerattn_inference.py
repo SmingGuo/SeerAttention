@@ -204,6 +204,22 @@ class Qwen3SeerAttention(nn.Module):
                     block_budget=self.block_budget,
                     sparsity_method=self.config.seerattn_sparsity_method,
                 )
+                if q_len == 1 and self.layer_idx >= self.seerattn_start_layer:
+                    block_sparse_mask_oracle = compute_oracle_sparse_mask(
+                        q,
+                        k,
+                        cache_seqlens,
+                        block_attention_mask,
+                        self.config.seerattn_gate_block_size,
+                        self.config.seerattn_sparsity_method,
+                        self.config.seerattn_threshold,
+                        self.block_budget,
+                    )
+                    matches = block_sparse_mask & block_sparse_mask_oracle
+                    for i in range(matches.shape[1]):
+                        cover_rate = matches[:, i].sum() / block_sparse_mask_oracle[:, i].sum()
+                        with open(f"cover_rate_layer{self.layer_idx}_head{i}.txt", "a") as f:
+                            f.write(f"{cover_rate} {block_sparse_mask.shape[0]} {block_sparse_mask.shape[2]}\n")
             else:
                 block_sparse_mask = compute_oracle_sparse_mask(
                     q,

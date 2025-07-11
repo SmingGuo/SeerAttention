@@ -11,12 +11,12 @@ def choose_task_config(model_size, output_dir):
     output_dir = output_dir.lower()
     if model_size != "32B":
         task_config = {
-            "aime24": {"bs": 15, "total_run": 64},
-            "aime25": {"bs": 15, "total_run": 64},
-            "math": {"bs": 75, "total_run": 8},
+            "aime24": {"bs": 30, "total_run": 1},
+            "aime25": {"bs": 30, "total_run": 1},
+            "math": {"bs": 75, "total_run": 1},
             "gpqa": {"bs": 30, "total_run": 16},
             "olympiadbench": {"bs": 15, "total_run": 8},
-            "livecodebench": {"bs": 15, "total_run": 8},
+            "livecodebench": {"bs": 30, "total_run": 1},
         }
     else:
         raise ValueError(f"Not support model_size: {model_size}")

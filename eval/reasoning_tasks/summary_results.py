@@ -129,7 +129,85 @@ def infer(args):
     sparsity_16k_list = []
     sparsity_32k_list = []
 
-    # Load the model and tokenizer
+    # # Load the model and tokenizer
+    # log_result_all = {
+    #     "total_calls": 0,
+    #     "compile_errors": 0,
+    #     "runtime_errors": 0,
+    #     "timeouts": 0,
+    #     "wrong_answers": 0,
+    #     "extraction_failed": 0,
+    #     "passes": 0,
+    # }
+    # for i in range(8):
+    #     output_runnum_subdir = os.path.join(args.output_dir, f"run_{i}")
+
+    #     # completion_filepath = os.path.join(output_runnum_subdir, "completions.json")
+        
+    #     # with open(completion_filepath, 'r') as f:
+    #     #     completions = json.load(f)
+
+    #     completion_filepath = os.path.join(output_runnum_subdir, "completions.jsonl")
+
+    #     completions = []
+    #     with open(completion_filepath, 'r') as f:
+    #         for line in f:
+    #             item = json.loads(line.strip())
+    #             completions.append(item["completion"])
+
+        
+    #     other_info_filepath = os.path.join(output_runnum_subdir, "other_info.json")
+
+    #     with open(other_info_filepath, 'r') as f:
+    #         other_info = json.load(f)
+
+    #     generate_lens = other_info['generate_lens']
+    #     total_time = other_info['total_time']
+    #     if args.profile_sparsity:
+    #         overall_sparsity = other_info['overall_sparsity']
+
+    #         sparsity_info_filepath = os.path.join(output_runnum_subdir, "sparsity_info.json")
+
+    #         with open(sparsity_info_filepath, 'r') as f:
+    #             all_batch_sparsitys_info = json.load(f)
+
+    #         quantile_sparsities = calculate_quantile_sparsity(all_batch_sparsitys_info, group_size=1000)
+
+    #         if len(quantile_sparsities) >= 16:
+    #             sparsity_16k = quantile_sparsities[15]
+    #             sparsity_16k_list.append(sparsity_16k)
+
+    #         if len(quantile_sparsities) >= 32:
+    #             sparsity_32k = quantile_sparsities[31]
+    #             sparsity_32k_list.append(sparsity_32k)
+    #     elif "quest" in args.output_dir.lower():
+    #         overall_sparsity = other_info['overall_sparsity']
+
+
+
+    #     print(f"Successfully loaded run{i}!")
+
+    #     if args.data_name == "livecodebench":
+    #         cache_path = os.path.join(output_runnum_subdir, "cache.jsonl")
+    #         Acc = livecodebench_compute_scores(jobs, completions, cache_path)
+    #         print(f"Acc: {Acc}")
+    #         if os.path.exists(cache_path):
+    #             os.remove(cache_path)
+    #         if os.path.exists(cache_path.replace(".jsonl", "_try2.jsonl")):
+    #             os.remove(cache_path.replace(".jsonl", "_try2.jsonl"))
+    #         with open(cache_path.replace(".jsonl", "_log.json"), "r") as f:
+    #             log_result = json.load(f)
+    #         log_result_all["total_calls"] += log_result["total_calls"]
+    #         log_result_all["compile_errors"] += log_result["compile_errors"]
+    #         log_result_all["runtime_errors"] += log_result["runtime_errors"]
+    #         log_result_all["timeouts"] += log_result["timeouts"]
+    #         log_result_all["wrong_answers"] += log_result["wrong_answers"]
+    #         log_result_all["extraction_failed"] += log_result["extraction_failed"]
+    #         log_result_all["passes"] += log_result["passes"]
+
+    # with open(os.path.join(args.output_dir, "log_result_summary.json"), "w") as f:
+    #     json.dump(log_result_all, f, indent=4)
+
 
     num_runs = args.total_run
     for i in range(num_runs):
