@@ -41,9 +41,9 @@ from transformers.utils import (
     logging,
     replace_return_docstrings,
 )
-from seer_attn.prefill_sparse.llama.configuration_llama_seerattn import SeerAttnLlamaConfig
+from seer_attn.prefill_sparse_perq.llama.configuration_llama_seerattn import SeerAttnLlamaConfig
 from seer_attn.utils import BaseModelOutputWithPastAndSeer, CausalLMOutputWithPastAndSeer
-from seer_attn.prefill_sparse.attn_gate import ATTNGATE_CLASSES, MultiHeadLinear
+from seer_attn.prefill_sparse_perq.attn_gate import ATTNGATE_CLASSES, MultiHeadLinear
 from seer_attn.modules.common import (
     repeat_kv,
     apply_rotary_pos_emb,
@@ -53,7 +53,8 @@ from seer_attn.modules.common import (
 from einops import rearrange
 
 from seer_attn.modules.attention_distill import attention_distill_forward
-from seer_attn.modules.attention_forward import sparse_flash_attention_forward
+# from seer_attn.modules.attention_forward import sparse_flash_attention_forward
+from seer_attn.prefill_sparse_perq.attention_forward import sparse_flash_attention_forward
 import copy, math, os
 from huggingface_hub import hf_hub_download
 from flash_attn.layers.rotary import apply_rotary_emb_func
@@ -198,14 +199,15 @@ class LlamaSeerAttention(nn.Module):
             config.num_attention_heads * self.head_dim, config.hidden_size, bias=config.attention_bias
         )
 
-        self.attn_gate = ATTNGATE_CLASSES[config.seerattn_gate_type](
+        self.attn_gate = ATTNGATE_CLASSES[config.seerattn_k_seq_pooling_type](
             config.seerattn_gate_block_size, 
             self.head_dim, 
             config.seerattn_gate_hidden_size,
             num_k_head=config.num_key_value_heads, 
             num_q_head=config.num_attention_heads,
-            force_double=config.seerattn_gate_force_double,
+            q_head_pooling_type=config.seerattn_q_head_pooling_type,
             use_flash_rope=config.use_flash_rope,
+            use_qk_norm=config.seerattn_use_qk_norm,
         )
 
         self.mask_loss_func = torch.nn.KLDivLoss()
@@ -219,6 +221,7 @@ class LlamaSeerAttention(nn.Module):
         past_key_value: Optional[Cache] = None,
         cache_position: Optional[torch.LongTensor] = None,
         block_position_embeddings: Tuple[torch.Tensor, torch.Tensor] = None,
+        position_embeddings_gate_q: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_attention_mask: Optional[torch.Tensor] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
@@ -238,6 +241,7 @@ class LlamaSeerAttention(nn.Module):
             key_states, 
             block_attention_mask, 
             block_position_embeddings, 
+            position_embeddings_gate_q,
             use_softmax=not self.training and self.config.seerattn_sparsity_method == "threshold",
         )
     
@@ -331,6 +335,7 @@ class SeerAttnLlamaDecoderLayer(nn.Module):
         use_cache: Optional[bool] = False,
         cache_position: Optional[torch.LongTensor] = None,
         position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,  # necessary, but kept here for BC
+        position_embeddings_gate_q: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_attention_mask: Optional[torch.Tensor] = None,
         **kwargs,
@@ -350,6 +355,7 @@ class SeerAttnLlamaDecoderLayer(nn.Module):
             cache_position=cache_position,
             position_embeddings=position_embeddings,
             block_position_embeddings=block_position_embeddings,
+            position_embeddings_gate_q=position_embeddings_gate_q,
             block_attention_mask=block_attention_mask,
             **kwargs,
         )
@@ -420,6 +426,7 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
         block_config = copy.deepcopy(config)
         block_config.hidden_size = config.seerattn_gate_hidden_size * config.num_attention_heads
         self.block_rotary_emb = LlamaRotaryEmbedding(config=block_config)
+        self.rotary_emb_gate_q = LlamaRotaryEmbedding(config=block_config)
        
         self.gradient_checkpointing = False
 
@@ -480,14 +487,12 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
 
         if position_ids is None:
             position_ids = cache_position.unsqueeze(0)
-        
+
         block_attention_mask = self._seerattn_update_causal_mask(
             attention_mask,
             inputs_embeds,
         )
-        # print("block_attention_mask: ", block_attention_mask)
-        # print("block_attention_mask shape: ", block_attention_mask.shape)
-        
+
         hidden_states = inputs_embeds
 
         # create position embeddings to be shared across the decoder layers
@@ -496,6 +501,9 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
         #Added for seerattn
         block_position_ids = position_ids[:, 0::self.config.seerattn_gate_block_size] ## downsampled position ids
         block_position_embeddings = self.block_rotary_emb(hidden_states, block_position_ids) # downsampled position embeddings
+
+        # position_ids_q = torch.arange(0, max_seqlen, device=position_ids.device).unsqueeze(0)
+        position_embeddings_gate_q = self.rotary_emb_gate_q(hidden_states, position_ids) # downsampled position embeddings
 
 
         # decoder layers
@@ -535,6 +543,7 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
                     use_cache=use_cache,
                     cache_position=cache_position,
                     position_embeddings=position_embeddings,
+                    position_embeddings_gate_q=position_embeddings_gate_q,
                     block_position_embeddings=block_position_embeddings,
                     block_attention_mask=block_attention_mask,
                 )
@@ -618,8 +627,18 @@ class SeerAttnLlamaModel(SeerAttnLlamaPreTrainedModel):
         else:
             min_dtype = torch.finfo(dtype).min
             number_of_blocks = math.ceil(seqlen / block_size)
-            gate_mask = torch.triu(torch.full((number_of_blocks, number_of_blocks), min_dtype, dtype=dtype, device=device), diagonal=1)
-            gate_mask = gate_mask.unsqueeze(0).unsqueeze(0).expand(batch_size, 1, number_of_blocks, number_of_blocks)
+
+            position_indices = torch.arange(seqlen, device=device)  
+            block_indices = position_indices // block_size           
+
+            gate_mask = torch.full((seqlen, number_of_blocks), min_dtype, dtype=dtype, device=device)  
+
+            col_indices = torch.arange(number_of_blocks, device=device)  
+            mask_matrix = col_indices <= block_indices.unsqueeze(-1)     
+
+            gate_mask.masked_fill_(mask_matrix, 0)
+
+            gate_mask = gate_mask.unsqueeze(0).unsqueeze(0)
 
         return gate_mask
 

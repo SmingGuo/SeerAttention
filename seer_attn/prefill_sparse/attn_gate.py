@@ -94,8 +94,9 @@ class AttnGate(nn.Module):
         if k.shape[1] < self.num_q_head:
             k = repeat_kv(k, self.num_q_head // k.shape[1])
         
+        # print("q.shape", q.shape, "k.shape", k.shape)
         attn = torch.matmul(q, k.transpose(-1, -2)) * self.scale
-        # print("attn", attn, "mask", attention_mask)
+        # print("attn", attn.shape, "mask", attention_mask.shape)
         if attention_mask.dtype == torch.bool:
             attn = attn.masked_fill(~attention_mask, -1e9)
         else:

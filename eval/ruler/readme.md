@@ -6,6 +6,7 @@ To run the RULER benchmark, you need first install the requirements:
 ```
     pip install Cython
     pip install -r requirements.txt
+    pip install flash-attn==2.7.4.post1 --no-build-isolation
 ```
 
 To reproduce SeerAttn results on RULER, run:

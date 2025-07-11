@@ -223,8 +223,8 @@ def get_sparse_attn_mask_from_nz_ratio(x, nz_ratio, use_dense_for_last_block=Fal
 def get_sparse_attn_mask_from_threshold(x, threshold, use_dense_for_last_block=False):
     dense_mask = x > threshold 
     if use_dense_for_last_block:
-        dense_mask[:, :,-2:,:] = True 
-    dense_mask.tril_()
+        dense_mask[:, :,-2:,:] = True # 128
+    # dense_mask.tril_()
     return  dense_mask
 
 
