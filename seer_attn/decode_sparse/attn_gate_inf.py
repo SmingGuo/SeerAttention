@@ -22,24 +22,81 @@ def get_sparse_attn_mask_from_threshold(x, threshold):
     dense_mask = x > threshold 
     return  dense_mask
 
-def get_sparse_attn_mask_from_budget(x, block_budget, block_attention_mask):
-    block_seq_len = x.size(-1)
+# def get_sparse_attn_mask_from_budget(x, block_budget, block_attention_mask):
+#     block_seq_len = x.size(-1)
     
-    if block_seq_len <= block_budget:
-        full_mask = torch.ones_like(x, dtype=torch.bool, device=x.device)
-        full_mask = full_mask & block_attention_mask
-        return full_mask
+#     if block_seq_len <= block_budget:
+#         full_mask = torch.ones_like(x, dtype=torch.bool, device=x.device)
+#         full_mask = full_mask & block_attention_mask
+#         return full_mask
 
-    k = block_budget 
+#     k = block_budget 
     
-    _, topk_indices = torch.topk(x, k=k, dim=-1, sorted=False)
+#     _, topk_indices = torch.topk(x, k=k, dim=-1, sorted=False)
     
+#     mask = torch.zeros_like(x, dtype=torch.bool, device=x.device)
+#     mask.scatter_(-1, topk_indices, True)
+
+#     final_mask = mask & block_attention_mask
+    
+#     return final_mask
+
+# def get_sparse_attn_mask_from_budget(x, block_budget_dict, block_attention_mask, layer_idx):
+#     mask = torch.zeros_like(x, dtype=torch.bool, device=x.device)
+#     block_seq_len = x.size(-1)
+#     for h in range(x.shape[1]):
+#         block_budget = block_budget_dict[(layer_idx, h)]
+#         k = min(block_budget, block_seq_len)
+
+#         _, topk_indices = torch.topk(x[:, h], k=k, dim=-1, sorted=False)
+
+#         mask[:, h].scatter_(-1, topk_indices, True)
+
+#         mask[:, h] = mask[:, h] & block_attention_mask.squeeze(1)  # Ensure mask is applied correctly
+
+#     return mask
+
+
+def get_sparse_attn_mask_from_budget(x, block_budget_dict, block_attention_mask, layer_idx):
+    batch_size, num_heads, block_seq_len = x.shape[0], x.shape[1], x.size(-1)
+
+    # 1. 为每个头创建一个预算张量 k_values
+    k_values = torch.tensor(
+        [min(block_budget_dict.get((layer_idx, h), 0), block_seq_len) for h in range(num_heads)],
+        device=x.device,
+        dtype=torch.long
+    )  # 形状: [num_heads]
+
+    # 2. 找到所有头中的最大预算 k_max
+    k_max = torch.max(k_values).item()
+
+    # 3. 使用 k_max 一次性为所有头获取 top-k 索引
+    _, topk_indices = torch.topk(x, k=k_max, dim=-1, sorted=True)
+    # topk_indices 的形状: [batch_size, num_heads, k_max]
+
+    # 4. 创建一个辅助掩码，用于过滤掉超出各个头预算的索引
+    # arange_k 的形状: [1, 1, k_max]
+    arange_k = torch.arange(k_max, device=x.device).view(1, 1, k_max)
+    # k_values_b 的形状，用于广播: [1, num_heads, 1]
+    k_values_b = k_values.view(1, num_heads, 1)
+
+    # valid_topk_mask 的形状: [1, num_heads, k_max]
+    # 对于每个头 h，只有前 k_values[h] 个索引对应的位置才是 True
+    valid_topk_mask = (arange_k < k_values_b)
+
+    # 5. 使用 scatter_ 高效地构建最终掩码
+    # 初始化一个全为 False 的掩码
     mask = torch.zeros_like(x, dtype=torch.bool, device=x.device)
-    mask.scatter_(-1, topk_indices, True)
+    # 将 valid_topk_mask 广播到与 topk_indices 相同的形状
+    src = valid_topk_mask.expand_as(topk_indices)
+    # 在 topk_indices 指定的位置，根据 src 的值 (True/False) 更新掩码
+    mask.scatter_(-1, topk_indices, src)
 
-    final_mask = mask & block_attention_mask
-    
-    return final_mask
+    # 6. 应用块级注意力掩码
+    mask = mask & block_attention_mask
+
+    return mask
+
 
 def compute_oracle_sparse_mask(q, k, cache_seqlens, block_attention_mask, block_size, sparsity_method, threshold=0.0, block_budget=2048):
     #batch_size, q_len, num_q_heads, head_dim = q.shape
@@ -160,6 +217,7 @@ class AttnGate(nn.Module):
             block_position_embeddings=None, 
             threshold=0.0,
             block_budget=None,
+            block_budget_dict=None,
             sparsity_method="threshold",
         ):  
 
@@ -222,7 +280,7 @@ class AttnGate(nn.Module):
                 attn = attn + attention_mask
             attn = F.softmax(attn, dim=-1)
             if sparsity_method == "token_budget":
-                mask = get_sparse_attn_mask_from_budget(attn, block_budget, attention_mask)
+                mask = get_sparse_attn_mask_from_budget(attn, block_budget_dict, attention_mask, layer_idx)
             elif sparsity_method == "threshold":
                 mask = get_sparse_attn_mask_from_threshold(attn, threshold)
             mask[:, : ,-1] = True

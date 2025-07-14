@@ -40,7 +40,7 @@ from ...modules.layernorm import RMSNorm
 from flash_attn.layers.rotary import apply_rotary_emb_func
 from ...decode_sparse.cache_utils import KCompressionCache
 from ...modules.common import apply_rotary_pos_emb
-
+import json
 
 
 from huggingface_hub import hf_hub_download
@@ -155,6 +155,7 @@ class Qwen3SeerAttention(nn.Module):
         position_embeddings_gate_q: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None, ## block position embeddings
         block_attention_mask: Optional[torch.Tensor] = None, ## block attention mask
+        block_budget_dict: Optional[dict] = None,
         **kwargs,
     ) -> Tuple[torch.Tensor, Optional[torch.Tensor], Optional[Tuple[torch.Tensor]]]:
 
@@ -202,24 +203,25 @@ class Qwen3SeerAttention(nn.Module):
                     block_position_embeddings=block_position_embeddings,
                     threshold=self.config.seerattn_threshold,
                     block_budget=self.block_budget,
+                    block_budget_dict=block_budget_dict,
                     sparsity_method=self.config.seerattn_sparsity_method,
                 )
-                if q_len == 1 and self.layer_idx >= self.seerattn_start_layer:
-                    block_sparse_mask_oracle = compute_oracle_sparse_mask(
-                        q,
-                        k,
-                        cache_seqlens,
-                        block_attention_mask,
-                        self.config.seerattn_gate_block_size,
-                        self.config.seerattn_sparsity_method,
-                        self.config.seerattn_threshold,
-                        self.block_budget,
-                    )
-                    matches = block_sparse_mask & block_sparse_mask_oracle
-                    for i in range(matches.shape[1]):
-                        cover_rate = matches[:, i].sum() / block_sparse_mask_oracle[:, i].sum()
-                        with open(f"cover_rate_layer{self.layer_idx}_head{i}.txt", "a") as f:
-                            f.write(f"{cover_rate} {block_sparse_mask.shape[0]} {block_sparse_mask.shape[2]}\n")
+                # if q_len == 1 and self.layer_idx >= self.seerattn_start_layer:
+                #     block_sparse_mask_oracle = compute_oracle_sparse_mask(
+                #         q,
+                #         k,
+                #         cache_seqlens,
+                #         block_attention_mask,
+                #         self.config.seerattn_gate_block_size,
+                #         self.config.seerattn_sparsity_method,
+                #         self.config.seerattn_threshold,
+                #         self.block_budget,
+                #     )
+                #     matches = block_sparse_mask & block_sparse_mask_oracle
+                #     for i in range(matches.shape[1]):
+                #         cover_rate = matches[:, i].sum() / block_sparse_mask_oracle[:, i].sum()
+                #         with open(f"cover_rate_layer{self.layer_idx}_head{i}.txt", "a") as f:
+                #             f.write(f"{cover_rate} {block_sparse_mask.shape[0]} {block_sparse_mask.shape[2]}\n")
             else:
                 block_sparse_mask = compute_oracle_sparse_mask(
                     q,
@@ -301,6 +303,7 @@ class Qwen3DecoderLayer(nn.Module):
         position_embeddings_gate_q: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_position_embeddings: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
         block_attention_mask: Optional[torch.Tensor] = None,
+        block_budget_dict: Optional[dict] = None,
         **kwargs,
     ) -> Tuple[torch.FloatTensor, Optional[Tuple[torch.FloatTensor, torch.FloatTensor]]]:
 
@@ -321,6 +324,7 @@ class Qwen3DecoderLayer(nn.Module):
             position_embeddings_gate_q=position_embeddings_gate_q,
             block_position_embeddings=block_position_embeddings,
             block_attention_mask=block_attention_mask,
+            block_budget_dict=block_budget_dict,
             **kwargs,
         )
         if self.fused_norm:
@@ -452,9 +456,35 @@ class Qwen3Model(Qwen3PreTrainedModel):
 
         self.gradient_checkpointing = False
         self.num_layers = config.num_hidden_layers
+        self.block_budget_dict = self.get_block_budget_dict()
+        print(f"Block budget dict: {self.block_budget_dict}")
 
         # Initialize weights and apply final processing
         self.post_init()
+
+    def get_block_budget_dict(self):
+        file_path = "coverage_profile_aime25_15.json"
+        with open(file_path, 'r') as f:
+            coverage_data = json.load(f)
+        below_set = set(tuple(pair) for pair in coverage_data["below_pairs"])
+        above_set = set(tuple(pair) for pair in coverage_data["above_pairs"])
+        block_budget_dict = {}
+        block_budget = self.config.seerattn_token_budget // self.config.seerattn_gate_block_size
+        adjust_amount = 32
+        print("file_path:", file_path)
+        print("adjust_amount:", adjust_amount)
+        for layer in range(self.config.num_hidden_layers):
+            for head in range(self.config.num_key_value_heads):
+                tuple_pair = (layer, head)
+                
+                if tuple_pair in below_set:
+                    block_budget_dict[tuple_pair] = block_budget + adjust_amount
+                elif tuple_pair in above_set:
+                    block_budget_dict[tuple_pair] = block_budget - adjust_amount
+                else:
+                    block_budget_dict[tuple_pair] = block_budget
+        
+        return block_budget_dict
 
     def get_input_embeddings(self):
         return self.embed_tokens
@@ -547,6 +577,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 position_embeddings_gate_q=position_embeddings_gate_q,
                 block_position_embeddings=block_position_embeddings,
                 block_attention_mask=block_attention_mask,
+                block_budget_dict=self.block_budget_dict
             )
 
             hidden_states = layer_outputs[0]

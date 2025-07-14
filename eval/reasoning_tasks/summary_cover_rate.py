@@ -52,7 +52,7 @@ def calculate_all_weighted_averages(token_budget=4096):
                             coverage = float(parts[0])
                             batch_size = int(parts[1])  # 假设第二个部分是batch size
                             seqlen = int(parts[2])  # 假设第三个部分是sequence length
-                            if seqlen > token_budget:
+                            if seqlen > token_budget/64:
                                 coverages.append(coverage)
                                 weights.append(batch_size * seqlen)
                                 all_data.append((coverage, batch_size * seqlen))
@@ -117,7 +117,7 @@ def calculate_all_weighted_averages(token_budget=4096):
 if __name__ == "__main__":
     # 添加命令行参数解析
     parser = argparse.ArgumentParser(description='计算覆盖率加权平均值并输出结果')
-    parser.add_argument('--output', type=str, required=True, 
+    parser.add_argument('--output', type=str, default="cover_rate_summary.txt", 
                         help='输出结果文件路径')
     parser.add_argument('--token_budget', type=int, default=4096)
     args = parser.parse_args()
