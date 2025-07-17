@@ -86,10 +86,11 @@ def parse_args():
     parser.add_argument("--surround_with_messages", action="store_true")
     parser.add_argument("--use_few_shot", action="store_true")
     parser.add_argument("--output_dir", default="./outputs", type=str)
-    parser.add_argument("--sparsity_method", default='threshold', choices=["token_budget", "threshold"], type=str)
+    parser.add_argument("--sparsity_method", default='threshold', choices=["token_budget", "threshold", "topp"], type=str)
     parser.add_argument("--sliding_window_size", default=0, type=int)
     parser.add_argument("--threshold", default=0, type=float)
     parser.add_argument("--token_budget", default=2048, type=int)
+    parser.add_argument("--topp", default=0.995, type=float)
     parser.add_argument("--start_layer", default=0, type=int)
     parser.add_argument("--block_size", default=64, type=int)
     parser.add_argument("--rank", default=0, type=int)
@@ -252,6 +253,7 @@ def infer(args):
                                             use_cache=True,
                                             seerattn_sparsity_method=args.sparsity_method,
                                             seerattn_threshold=args.threshold,
+                                            seerattn_topp=args.topp,
                                             seerattn_sliding_window_size=args.sliding_window_size,
                                             seerattn_token_budget=args.token_budget,
                                             seerattn_gate_block_size=args.block_size,

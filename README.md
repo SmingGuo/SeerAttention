@@ -61,7 +61,7 @@ conda create -yn seer python=3.11
 conda activate seer
 pip install torch==2.4.0
 pip install -r requirements.txt
-pip install flash-attn --no-build-isolation
+pip install flash-attn==2.7.4.post1 --no-build-isolation
 pip install -e . 
 ```
 

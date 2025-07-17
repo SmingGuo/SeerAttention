@@ -202,6 +202,7 @@ class Qwen3SeerAttention(nn.Module):
                     block_position_embeddings=block_position_embeddings,
                     threshold=self.config.seerattn_threshold,
                     block_budget=self.block_budget,
+                    topp=self.config.seerattn_topp,
                     sparsity_method=self.config.seerattn_sparsity_method,
                 )
             else:

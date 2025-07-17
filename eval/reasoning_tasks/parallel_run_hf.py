@@ -11,12 +11,12 @@ def choose_task_config(model_size, output_dir):
     output_dir = output_dir.lower()
     if model_size != "32B":
         task_config = {
-            "aime24": {"bs": 15, "total_run": 64},
-            "aime25": {"bs": 15, "total_run": 64},
-            "math": {"bs": 75, "total_run": 8},
+            "aime24": {"bs": 30, "total_run": 1},
+            "aime25": {"bs": 30, "total_run": 64},
+            "math": {"bs": 75, "total_run": 2},
             "gpqa": {"bs": 30, "total_run": 16},
             "olympiadbench": {"bs": 15, "total_run": 8},
-            "livecodebench": {"bs": 15, "total_run": 8},
+            "livecodebench": {"bs": 30, "total_run": 8},
         }
     else:
         raise ValueError(f"Not support model_size: {model_size}")
@@ -39,10 +39,11 @@ if __name__ == "__main__":
                         help="Limit for the number of samples to process")
     parser.add_argument("--num_gpus", default="8", type=int)
     parser.add_argument("--block_size", default="64", type=str)
-    parser.add_argument("--sparsity_method", default='threshold', choices=["token_budget", "threshold"], type=str)
+    parser.add_argument("--sparsity_method", default='threshold', choices=["token_budget", "threshold", "topp"], type=str)
     parser.add_argument("--sliding_window_size", default="0", type=str)
     parser.add_argument("--threshold", default="0", type=str)
     parser.add_argument("--token_budget", default="2048", type=str)
+    parser.add_argument("--topp", default="0.995", type=str)
     parser.add_argument("--max_tokens", default="32768", type=str)
     parser.add_argument("--start_layer", type=int, default=0, help="Start sparse layer, '0' means all layers")
     parser.add_argument("--profile_sparsity", action="store_true",
@@ -60,6 +61,7 @@ if __name__ == "__main__":
     sliding_window_sizes = [s.strip() for s in args.sliding_window_size.split(",") if s.strip()]
     thresholds = [t.strip() for t in args.threshold.split(",") if t.strip()]
     block_sizes = [b.strip() for b in args.block_size.split(",") if b.strip()]
+    topps = [p.strip() for p in args.topp.split(",") if p.strip()]
 
     model_subfolder = os.path.basename(model_dir.rstrip('/'))
     output_dir = os.path.join(args.output_dir, model_subfolder)
@@ -95,6 +97,12 @@ if __name__ == "__main__":
                     for sw in sliding_window_sizes 
                     for th in thresholds
                 ]
+            elif sparsity_method == "topp":
+                param_combinations = [
+                    (sw, tp) 
+                    for sw in sliding_window_sizes 
+                    for tp in topps
+                ]
 
             for params in param_combinations:
                 if sparsity_method == "token_budget":
@@ -111,6 +119,13 @@ if __name__ == "__main__":
                         "--threshold", str(threshold),
                         "--sliding_window_size", str(sliding_window_size),
                     ]
+                elif sparsity_method == "topp":
+                    sliding_window_size, topp = params
+                    param_desc = f"window={sliding_window_size}, topp={topp}"
+                    cli_params = [
+                        "--topp", str(topp),
+                        "--sliding_window_size", str(sliding_window_size),
+                    ]
 
                 print(f"\n{'─'*30}")
                 print(f"Processing Task:{task} | Block_size:{block_size} | {sparsity_method}: {param_desc}")
@@ -124,6 +139,8 @@ if __name__ == "__main__":
                     output_config_subdir = os.path.join(output_dir, f"{task}_bs{bs}_{sparsity_method}_B{token_budget}_start{args.start_layer}_blocksize{block_size}_{attention_implementation}")
                 elif sparsity_method == "threshold":
                     output_config_subdir = os.path.join(output_dir, f"{task}_bs{bs}_{sparsity_method}_T{threshold}_start{args.start_layer}_blocksize{block_size}_{attention_implementation}")
+                elif sparsity_method == "topp":
+                    output_config_subdir = os.path.join(output_dir, f"{task}_bs{bs}_{sparsity_method}_P{topp}_start{args.start_layer}_blocksize{block_size}_{attention_implementation}")
 
                 os.makedirs(output_config_subdir, exist_ok=True)
 

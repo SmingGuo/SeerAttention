@@ -71,6 +71,7 @@ class SeerAttnQwen3Config(PretrainedConfig):
         seerattn_sliding_window_size=0, ## 0 means no sliding window
         seerattn_token_budget=4096,
         seerattn_threshold=0.0,
+        seerattn_topp=0.995,
         seerattn_use_rope=True,
         seerattn_use_qk_norm=False,
         seerattn_k_seq_pooling_type='Kmaxminavg',
@@ -115,6 +116,7 @@ class SeerAttnQwen3Config(PretrainedConfig):
         self.seerattn_sliding_window_size = seerattn_sliding_window_size
         self.seerattn_token_budget = seerattn_token_budget
         self.seerattn_threshold = seerattn_threshold
+        self.seerattn_topp = seerattn_topp
         self.seerattn_k_seq_pooling_type = seerattn_k_seq_pooling_type  # Kmaxminavg
         self.seerattn_q_head_pooling_type = seerattn_q_head_pooling_type
         self.seerattn_training_threshold = seerattn_training_threshold

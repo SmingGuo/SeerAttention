@@ -41,6 +41,53 @@ def get_sparse_attn_mask_from_budget(x, block_budget, block_attention_mask):
     
     return final_mask
 
+
+# def get_sparse_attn_mask_from_topp(x, p=0.995):
+
+#     sorted_weights, sorted_indices = torch.sort(x, dim=-1, descending=True)
+
+#     cumulative_weights = torch.cumsum(sorted_weights, dim=-1)
+
+#     sorted_mask = (cumulative_weights - sorted_weights) < p
+
+#     final_mask = torch.zeros_like(x, dtype=torch.bool)
+    
+#     final_mask.scatter_(dim=-1, index=sorted_indices, src=sorted_mask)
+
+#     return final_mask
+
+def get_sparse_attn_mask_from_topp(x, p=0.99):
+    B, H, S = x.shape
+    
+    low = torch.zeros((B, H, 1), device=x.device, dtype=x.dtype)
+    high = torch.ones((B, H, 1), device=x.device, dtype=x.dtype)
+    
+    # 2. 迭代搜索
+    for _ in range(16):
+        mid = (low + high) / 2.0
+
+        temp_mask = x > mid
+
+        prob_sum = (x * temp_mask).sum(dim=-1, keepdim=True)
+
+        is_above_p = prob_sum > p
+        
+        low = torch.where(is_above_p, mid, low)
+        high = torch.where(is_above_p, high, mid)
+
+    if S == 32:
+        with open("debug.txt", "a") as f:
+            f.write(f"S: {S*64}, low: {low[0]}\n")
+    elif S == 240:
+        with open("debug.txt", "a") as f:
+            f.write(f"S: {S*64}, low: {low[0]}\n")
+    elif S == 480:
+        with open("debug.txt", "a") as f:
+            f.write(f"S: {S*64}, low: {low[0]}\n")
+    final_mask = x > low
+    
+    return final_mask
+
 def compute_oracle_sparse_mask(q, k, cache_seqlens, block_attention_mask, block_size, sparsity_method, threshold=0.0, block_budget=2048):
     #batch_size, q_len, num_q_heads, head_dim = q.shape
     q_len = q.shape[1]
@@ -158,6 +205,7 @@ class AttnGate(nn.Module):
             max_cache_len=None,
             position_embeddings=None,
             block_position_embeddings=None, 
+            topp=0.995,
             threshold=0.0,
             block_budget=None,
             sparsity_method="threshold",
@@ -225,6 +273,8 @@ class AttnGate(nn.Module):
                 mask = get_sparse_attn_mask_from_budget(attn, block_budget, attention_mask)
             elif sparsity_method == "threshold":
                 mask = get_sparse_attn_mask_from_threshold(attn, threshold)
+            elif sparsity_method == "topp":
+                mask = get_sparse_attn_mask_from_topp(attn, p=topp)
             mask[:, : ,-1] = True
             
             return mask
