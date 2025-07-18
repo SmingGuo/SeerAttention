@@ -29,7 +29,7 @@ from transformers.utils import (
     logging,
 )
 from ..qwen3.configuration_qwen3_seerattn import SeerAttnQwen3Config
-from ..attn_gate_training import ATTNGATE_CLASSES, MultiHeadLinear, HeadPoolingLinear
+from ..attn_gate_training import ATTNGATE_CLASSES, MultiHeadLinear, HeadPoolingLinear, SeqPoolingLinear
 from ...kernels.varlen.attn_pooling_qkv_varlen_1d import attn_pooling_qkv_varlen as attn_pooling
 import copy, math, os
 from seer_attn.utils import BaseModelOutputWithPastAndGateloss, CausalLMOutputWithPastAndGateloss
@@ -325,7 +325,7 @@ class SeerAttnQwen3PreTrainedModel(PreTrainedModel):
             module.weight.data.normal_(mean=0.0, std=std)
             if module.padding_idx is not None:
                 module.weight.data[module.padding_idx].zero_()
-        elif isinstance(module, MultiHeadLinear) or isinstance(module, HeadPoolingLinear):
+        elif isinstance(module, MultiHeadLinear) or isinstance(module, HeadPoolingLinear) or isinstance(module, SeqPoolingLinear):
             module.weight.data.normal_(mean=0.0, std=std)
         elif isinstance(module, Qwen3RMSNorm) or isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)

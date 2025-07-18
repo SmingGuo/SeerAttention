@@ -156,7 +156,8 @@ def tokenize_fn(tokenizer, examples):
         add_special_tokens=False,
         truncation=False,
         return_tensors="pt",
-        padding=False,
+        pad_to_multiple_of=64,
+        padding=True,
     )
 
     return {"input_ids": outputs["input_ids"][0]}
@@ -355,4 +356,3 @@ def train():
 
 if __name__ == "__main__":
     train()
-

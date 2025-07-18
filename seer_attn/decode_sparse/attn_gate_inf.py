@@ -107,6 +107,38 @@ class MultiHeadLinear(nn.Module):
         else:
             raise ValueError("x dim should be 3 or 4")
 
+class SeqPoolingLinear(nn.Module):
+    def __init__(self, in_channel_size, hidden_size, num_head, block_size):
+        super(SeqPoolingLinear, self).__init__()
+        self.in_channel = in_channel_size
+        self.hidden_size = hidden_size
+        self.num_head = num_head
+        self.block_size = block_size
+        self.weight = nn.Parameter(torch.Tensor(self.block_size, self.num_head, self.in_channel, self.hidden_size))
+        self._init_weight()
+    
+
+    def _init_weight(self):
+        init.xavier_uniform_(self.weight)
+
+    def forward(self, x): # x shape (batch, seq_length, head, channel_size)
+        seq_length = x.shape[1]
+    
+        padding_size = (self.block_size - seq_length % self.block_size) % self.block_size
+        
+        if padding_size > 0:
+            x = torch.cat([
+                x, 
+                torch.zeros(x.shape[0], padding_size, x.shape[2], x.shape[3], 
+                            dtype=x.dtype, device=x.device)
+            ], dim=1)
+
+        new_seq_length = seq_length + padding_size
+        num_blocks = new_seq_length // self.block_size
+        x = x.view(x.shape[0], num_blocks, self.block_size, self.num_head, self.in_channel)
+
+        return torch.einsum('zsbhi,bhio->zsho', x, self.weight)
+
 class AttnGate(nn.Module):
     def __init__(self, 
                  block_size, 
@@ -142,7 +174,7 @@ class AttnGate(nn.Module):
             self.attngate_linear_q = MultiHeadLinear(self.model_hidden_size, self.gate_hidden_size, self.num_k_head)
         else:
             self.attngate_linear_q = None
-        self.attngate_linear_k = MultiHeadLinear(k_in_channel_size, self.gate_hidden_size, self.num_k_head)
+        self.attngate_linear_k = SeqPoolingLinear(k_in_channel_size, self.gate_hidden_size, self.num_k_head, self.block_size)
 
         if self.use_qk_norm:
             self.attngate_qnorm = RMSNorm(self.gate_hidden_size, eps=1e-06)
@@ -187,9 +219,8 @@ class AttnGate(nn.Module):
 
             if max_cache_len % self.block_size == 0:
                 remainder = k_compressed_cache.get_k_remainder(layer_idx)
-                k_compressed = [pool_func(remainder, kernel_size=[self.block_size, 1, 1], stride=[self.block_size, 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
-                k_compressed = torch.cat(k_compressed, dim=-1)        
-                k_compressed = self.attngate_linear_k(k_compressed) ## [b, 1, k_head, dim]
+
+                k_compressed = self.attngate_linear_k(remainder) ## [b, 1, k_head, dim]
                 
 
                 if self.use_qk_norm:
@@ -229,12 +260,12 @@ class AttnGate(nn.Module):
             
             return mask
         else:
-            if k.shape[1] >= self.block_size:
-                k_pooled = [pool_func(k, kernel_size=[self.block_size, 1, 1], stride=[self.block_size, 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
-            else:
-                k_pooled = [pool_func(k, kernel_size=[k.shape[1], 1, 1], stride=[k.shape[1], 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
-            k_pooled = torch.cat(k_pooled, dim=-1)        
-            k_compressed = self.attngate_linear_k(k_pooled)
+            # if k.shape[1] >= self.block_size:
+            #     k_pooled = [pool_func(k, kernel_size=[self.block_size, 1, 1], stride=[self.block_size, 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
+            # else:
+            #     k_pooled = [pool_func(k, kernel_size=[k.shape[1], 1, 1], stride=[k.shape[1], 1, 1], ceil_mode=True) for pool_func in self.k_pooling_funcs]
+            # k_pooled = torch.cat(k_pooled, dim=-1)        
+            k_compressed = self.attngate_linear_k(k)
             if self.use_qk_norm:
                 k_compressed = self.attngate_knorm(k_compressed)
 

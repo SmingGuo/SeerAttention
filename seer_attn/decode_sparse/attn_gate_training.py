@@ -77,6 +77,30 @@ class MultiHeadLinear(nn.Module):
         else:
             raise ValueError("x dim should be 3 or 4")
 
+class SeqPoolingLinear(nn.Module):
+    def __init__(self, in_channel_size, hidden_size, num_head, block_size):
+        super(SeqPoolingLinear, self).__init__()
+        self.in_channel = in_channel_size
+        self.hidden_size = hidden_size
+        self.num_head = num_head
+        self.block_size = block_size
+        self.weight = nn.Parameter(torch.Tensor(self.block_size, self.num_head, self.in_channel, self.hidden_size))
+        self._init_weight()
+    
+
+    def _init_weight(self):
+        init.xavier_uniform_(self.weight)
+
+    def forward(self, x): # x shape (seq_length, head, channel_size) 
+        if x.dim() == 3:
+            x = x.view(x.shape[0] // self.block_size, self.block_size, x.shape[1], x.shape[2])
+            return torch.einsum('sbhi,bhio->sho', x, self.weight)
+        elif x.dim() == 4:
+            x = x.view(x.shape[0], x.shape[1] // self.block_size, self.block_size, x.shape[2], x.shape[3])
+            return torch.einsum('zsbhi,bhio->zsho', x, self.weight)
+        else:
+            raise ValueError("x dim should be 3 or 4")
+
 class AttnGate(nn.Module):
     def __init__(
             self, 
@@ -111,7 +135,8 @@ class AttnGate(nn.Module):
             self.attngate_linear_q = MultiHeadLinear(self.model_hidden_size, self.gate_hidden_size, self.num_k_head)
         else:
             self.attngate_linear_q = None
-        self.attngate_linear_k = MultiHeadLinear(k_in_channel_size, self.gate_hidden_size, self.num_k_head)
+        # self.attngate_linear_k = MultiHeadLinear(k_in_channel_size, self.gate_hidden_size, self.num_k_head)
+        self.attngate_linear_k = SeqPoolingLinear(k_in_channel_size, self.gate_hidden_size, self.num_k_head, self.block_size)
 
         if self.use_qk_norm:
             self.attngate_qnorm = RMSNorm(self.gate_hidden_size, eps=1e-06)
@@ -154,9 +179,13 @@ class AttnGate(nn.Module):
             cos, sin = position_embeddings_gate_q
             q = apply_rotary_pos_emb_single(q, cos, sin, unsqueeze_dim=1)
 
-        k_pooled = [pool_func(k, cu_seqlens, max_seqlen, self.block_size) for pool_func in self.k_pooling_funcs] ## pooling change to batch layout
-        k = torch.cat(k_pooled, dim=-1)        
-        k = self.attngate_linear_k(k) ## [b, num_k_head, seqlen, hidden_size]
+        # k_pooled = [pool_func(k, cu_seqlens, max_seqlen, self.block_size) for pool_func in self.k_pooling_funcs] ## pooling change to batch layout
+        # k = torch.cat(k_pooled, dim=-1)        
+        # k = self.attngate_linear_k(k) ## [b, num_k_head, seqlen, hidden_size]
+        k = self.attngate_linear_k(k)
+        k = index_put_first_axis(k, unpad_indices, bsz * max_seqlen)
+        k = k.view(bsz, max_seqlen, -1, k.size(-1))
+        k = k.permute(0, 2, 1, 3).contiguous()
 
         if self.use_qk_norm:
             k = self.attngate_knorm(k)
