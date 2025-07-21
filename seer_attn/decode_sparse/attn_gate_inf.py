@@ -174,7 +174,7 @@ class AttnGate(nn.Module):
             self.attngate_linear_q = MultiHeadLinear(self.model_hidden_size, self.gate_hidden_size, self.num_k_head)
         else:
             self.attngate_linear_q = None
-        self.attngate_linear_k = SeqPoolingLinear(k_in_channel_size, self.gate_hidden_size, self.num_k_head, self.block_size)
+        self.attngate_linear_k = SeqPoolingLinear(model_hidden_size, self.gate_hidden_size, self.num_k_head, self.block_size)
 
         if self.use_qk_norm:
             self.attngate_qnorm = RMSNorm(self.gate_hidden_size, eps=1e-06)

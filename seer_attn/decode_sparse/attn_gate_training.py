@@ -136,7 +136,7 @@ class AttnGate(nn.Module):
         else:
             self.attngate_linear_q = None
         # self.attngate_linear_k = MultiHeadLinear(k_in_channel_size, self.gate_hidden_size, self.num_k_head)
-        self.attngate_linear_k = SeqPoolingLinear(k_in_channel_size, self.gate_hidden_size, self.num_k_head, self.block_size)
+        self.attngate_linear_k = SeqPoolingLinear(model_hidden_size, self.gate_hidden_size, self.num_k_head, self.block_size)
 
         if self.use_qk_norm:
             self.attngate_qnorm = RMSNorm(self.gate_hidden_size, eps=1e-06)
@@ -182,9 +182,11 @@ class AttnGate(nn.Module):
         # k_pooled = [pool_func(k, cu_seqlens, max_seqlen, self.block_size) for pool_func in self.k_pooling_funcs] ## pooling change to batch layout
         # k = torch.cat(k_pooled, dim=-1)        
         # k = self.attngate_linear_k(k) ## [b, num_k_head, seqlen, hidden_size]
-        k = self.attngate_linear_k(k)
+
         k = index_put_first_axis(k, unpad_indices, bsz * max_seqlen)
         k = k.view(bsz, max_seqlen, -1, k.size(-1))
+        
+        k = self.attngate_linear_k(k)
         k = k.permute(0, 2, 1, 3).contiguous()
 
         if self.use_qk_norm:
