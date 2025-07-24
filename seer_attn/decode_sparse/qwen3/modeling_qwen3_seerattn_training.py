@@ -327,6 +327,8 @@ class SeerAttnQwen3PreTrainedModel(PreTrainedModel):
                 module.weight.data[module.padding_idx].zero_()
         elif isinstance(module, MultiHeadLinear) or isinstance(module, HeadPoolingLinear) or isinstance(module, SeqPoolingLinear):
             module.weight.data.normal_(mean=0.0, std=std)
+            if hasattr(module, "weight2") and module.weight2 is not None:
+                module.weight2.data.normal_(mean=0.0, std=std)
         elif isinstance(module, Qwen3RMSNorm) or isinstance(module, RMSNorm):
             module.weight.data.fill_(1.0)
 

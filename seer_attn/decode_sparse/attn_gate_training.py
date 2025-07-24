@@ -77,6 +77,39 @@ class MultiHeadLinear(nn.Module):
         else:
             raise ValueError("x dim should be 3 or 4")
 
+# class SeqPoolingLinear(nn.Module):
+#     def __init__(self, in_channel_size, hidden_size, num_head, block_size):
+#         super(SeqPoolingLinear, self).__init__()
+#         self.in_channel = in_channel_size
+#         self.hidden_size = hidden_size
+#         self.num_head = num_head
+#         self.block_size = block_size
+#         self.weight = nn.Parameter(torch.Tensor(self.block_size, self.num_head, self.in_channel, self.hidden_size))
+#         self._init_weight()
+    
+
+#     def _init_weight(self):
+#         init.xavier_uniform_(self.weight)
+
+#     def forward(self, x): # x shape (batch, seq_length, head, channel_size)
+#         seq_length = x.shape[1]
+    
+#         padding_size = (self.block_size - seq_length % self.block_size) % self.block_size
+        
+#         if padding_size > 0:
+#             x = torch.cat([
+#                 x, 
+#                 torch.zeros(x.shape[0], padding_size, x.shape[2], x.shape[3], 
+#                             dtype=x.dtype, device=x.device)
+#             ], dim=1)
+
+#         new_seq_length = seq_length + padding_size
+#         num_blocks = new_seq_length // self.block_size
+#         x = x.view(x.shape[0], num_blocks, self.block_size, self.num_head, self.in_channel)
+
+#         return torch.einsum('zsbhi,bhio->zsho', x, self.weight)
+
+# nohead_linear
 class SeqPoolingLinear(nn.Module):
     def __init__(self, in_channel_size, hidden_size, num_head, block_size):
         super(SeqPoolingLinear, self).__init__()
@@ -84,22 +117,33 @@ class SeqPoolingLinear(nn.Module):
         self.hidden_size = hidden_size
         self.num_head = num_head
         self.block_size = block_size
-        self.weight = nn.Parameter(torch.Tensor(self.block_size, self.num_head, self.in_channel, self.hidden_size))
+        self.weight = nn.Parameter(torch.Tensor(self.block_size, self.in_channel, self.hidden_size))
+        self.weight2 = nn.Parameter(torch.Tensor(self.num_head, self.in_channel, self.hidden_size))
         self._init_weight()
     
 
     def _init_weight(self):
         init.xavier_uniform_(self.weight)
+        init.xavier_uniform_(self.weight2)
 
-    def forward(self, x): # x shape (seq_length, head, channel_size) 
-        if x.dim() == 3:
-            x = x.view(x.shape[0] // self.block_size, self.block_size, x.shape[1], x.shape[2])
-            return torch.einsum('sbhi,bhio->sho', x, self.weight)
-        elif x.dim() == 4:
-            x = x.view(x.shape[0], x.shape[1] // self.block_size, self.block_size, x.shape[2], x.shape[3])
-            return torch.einsum('zsbhi,bhio->zsho', x, self.weight)
-        else:
-            raise ValueError("x dim should be 3 or 4")
+    def forward(self, x): # x shape (batch, seq_length, head, channel_size)
+        seq_length = x.shape[1]
+    
+        padding_size = (self.block_size - seq_length % self.block_size) % self.block_size
+        
+        if padding_size > 0:
+            x = torch.cat([
+                x, 
+                torch.zeros(x.shape[0], padding_size, x.shape[2], x.shape[3], 
+                            dtype=x.dtype, device=x.device)
+            ], dim=1)
+
+        new_seq_length = seq_length + padding_size
+        num_blocks = new_seq_length // self.block_size
+        x = x.view(x.shape[0], num_blocks, self.block_size, self.num_head, self.in_channel)
+
+        x = torch.einsum('zsbhi,bio->zsho', x, self.weight)
+        return torch.einsum('zshi,hio->zsho', x, self.weight2)
 
 class AttnGate(nn.Module):
     def __init__(
@@ -135,7 +179,7 @@ class AttnGate(nn.Module):
             self.attngate_linear_q = MultiHeadLinear(self.model_hidden_size, self.gate_hidden_size, self.num_k_head)
         else:
             self.attngate_linear_q = None
-        # self.attngate_linear_k = MultiHeadLinear(k_in_channel_size, self.gate_hidden_size, self.num_k_head)
+        
         self.attngate_linear_k = SeqPoolingLinear(model_hidden_size, self.gate_hidden_size, self.num_k_head, self.block_size)
 
         if self.use_qk_norm:
