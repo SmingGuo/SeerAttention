@@ -3,6 +3,7 @@
 headpooling_type=${HEADPOOLING_TYPE:-"Qproj"} # Using Linear layer to aggregate Q heads to K heads
 gate_type=${GATE_TYPE:-"Kmaxminavg"}  ## A combination of max, min, and average pooling
 gate_hidden_size=${SEERATTN_GATE_HIDDEN_SIZE:-128}     
+kldiv_a=${KLDIV_A:-0.0}  # KL divergence coefficient for attention gate
 blocksize=${SEERATTN_BLOCK_SIZE:-64}
 warmup_steps=${WARMUP_STEPS:-20}
 training_max_length=${TRAINING_MAX_LENGTH:-32768}
@@ -26,7 +27,7 @@ gradient_accumulation_steps=$((bs/gpus))
 
 export WANDB_MODE=offline
 
-run_name="${prefix}_${headpooling_type}_${gate_type}_bs${bs}_steps${steps}_gdim${gate_hidden_size}_block${blocksize}_wd${weight_decay}_lr${lr}_slice${loss_slice_ratio}_qknorm${use_qk_norm}"
+run_name="${prefix}_${headpooling_type}_${gate_type}_kla${kldiv_a}_bs${bs}_steps${steps}_gdim${gate_hidden_size}_block${blocksize}_wd${weight_decay}_lr${lr}_slice${loss_slice_ratio}_qknorm${use_qk_norm}"
 echo "Running with headpooling type: ${headpooling_type}"
 echo "Run name: ${run_name}"
 
@@ -56,4 +57,5 @@ torchrun --nproc_per_node=$gpus --master_port=10003 distillation_decode.py  \
     --seerattn_loss_slice_ratio $loss_slice_ratio \
     --seerattn_use_qk_norm $use_qk_norm \
     --seerattn_use_rope $use_rope \
+    --seerattn_kldiv_a $kldiv_a \
     --max_steps $steps 

@@ -37,6 +37,23 @@ from flash_attn.bert_padding import unpad_input, pad_input
 from seer_attn.modules.common import apply_rotary_pos_emb, get_indice, RMSNorm
 
 
+class MixedKLDivLoss(nn.Module):
+    def __init__(self, a, reduction='mean'):
+        super(MixedKLDivLoss, self).__init__()
+        self.a = a
+        self.reduction = reduction
+
+    def forward(self, log_q, p):
+        log_p = torch.log(p + 1e-10)
+
+        kl_forward = F.kl_div(log_q, p, reduction=self.reduction)
+
+        kl_reverse = F.kl_div(log_p, log_q, log_target=True, reduction=self.reduction)
+
+        mixed_kl = self.a * kl_reverse + (1 - self.a) * kl_forward
+
+        return mixed_kl
+
 logger = logging.get_logger(__name__)
 
 
@@ -93,8 +110,10 @@ class SeerAttnQwen3Attention(nn.Module):
             q_head_pooling_type=config.seerattn_q_head_pooling_type,
             use_qk_norm=config.seerattn_use_qk_norm,
         )
-
-        self.loss_fct = torch.nn.KLDivLoss()
+        self.seerattn_kldiv_a = config.seerattn_kldiv_a
+        # self.loss_fct = torch.nn.KLDivLoss()
+        print("seerattn_kldiv_a:", self.seerattn_kldiv_a)
+        self.loss_fct = MixedKLDivLoss(self.seerattn_kldiv_a, reduction='mean')
         self.headpooling_type = config.seerattn_q_head_pooling_type
         self.loss_slice_ratio = config.seerattn_loss_slice_ratio
         self.block_size = config.seerattn_gate_block_size

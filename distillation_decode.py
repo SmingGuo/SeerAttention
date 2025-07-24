@@ -91,6 +91,10 @@ class ModelArguments:
         default=True,
         metadata={"help": "use rope in attn gate."},
     )
+    seerattn_kldiv_a: Optional[float] = field(
+        default=0.0,
+        metadata={"help": "kldiv_a for attn gate."},
+    )
 
 
 
@@ -232,6 +236,7 @@ def train():
     original_vocab_size = config.vocab_size
     config.seerattn_k_seq_pooling_type = model_args.seerattn_k_seq_pooling_type
     config.seerattn_gate_block_size = model_args.seerattn_gate_block_size
+    config.seerattn_kldiv_a = model_args.seerattn_kldiv_a
 
     config.seerattn_q_head_pooling_type = model_args.seerattn_q_head_pooling_type
     config.seerattn_gate_hidden_size = model_args.seerattn_gate_hidden_size

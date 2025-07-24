@@ -72,6 +72,7 @@ class SeerAttnQwen3Config(PretrainedConfig):
         seerattn_token_budget=4096,
         seerattn_threshold=0.0,
         seerattn_topp=0.995,
+        seerattn_kldiv_a=0,
         seerattn_use_rope=True,
         seerattn_use_qk_norm=False,
         seerattn_k_seq_pooling_type='Kmaxminavg',
