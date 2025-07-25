@@ -37,7 +37,7 @@ def analyze_and_save_coverage(file_path, output_file):
         print("错误：无法解析全局加权平均覆盖率。")
         return
 
-    below_threshold = global_avg_rate * 0.80
+    below_threshold = global_avg_rate * 0.90
     above_threshold = global_avg_rate * 1.10
 
     # 存储完整信息用于后续处理
@@ -105,7 +105,7 @@ def analyze_and_save_coverage(file_path, output_file):
 
 
 if __name__ == "__main__":
-    coverage_file = "/home/v-shumingguo/gsm_blob/results/profile/Qwen3-14B/aime25_6k_cover_rate.txt"
-    output_file = "coverage_profile_aime25_10.json"
-    
+    coverage_file = "/home/v-shumingguo/gsm_blob/results/profile/Qwen3-14B/livecodebench_6k_cover_rate.txt"
+    output_file = "coverage_profile_livecodebench_10.json"
+
     analyze_and_save_coverage(coverage_file, output_file)

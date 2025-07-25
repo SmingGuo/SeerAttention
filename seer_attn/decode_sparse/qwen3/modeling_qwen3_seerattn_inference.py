@@ -470,7 +470,7 @@ class Qwen3Model(Qwen3PreTrainedModel):
         above_set = set(tuple(pair) for pair in coverage_data["above_pairs"])
         block_budget_dict = {}
         block_budget = self.config.seerattn_token_budget // self.config.seerattn_gate_block_size
-        adjust_amount = 32
+        adjust_amount = 16
         print("file_path:", file_path)
         print("adjust_amount:", adjust_amount)
         for layer in range(self.config.num_hidden_layers):
@@ -479,11 +479,11 @@ class Qwen3Model(Qwen3PreTrainedModel):
                 
                 if tuple_pair in below_set:
                     block_budget_dict[tuple_pair] = block_budget + adjust_amount
-                elif tuple_pair in above_set:
-                    block_budget_dict[tuple_pair] = block_budget - adjust_amount
+                # elif tuple_pair in above_set:
+                #     block_budget_dict[tuple_pair] = block_budget - adjust_amount
                 else:
                     block_budget_dict[tuple_pair] = block_budget
-        
+        print("Block budget dict:", block_budget_dict)
         return block_budget_dict
 
     def get_input_embeddings(self):
